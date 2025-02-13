@@ -7,7 +7,8 @@ const { ReadlineParser } = require('@serialport/parser-readline'); // Correct im
 
 const SERVER_URL = 'http://tandaplayerbt.local:80';
 
-let buffer = new Array(20).fill(0);
+let lightsUp = false;
+let buffer = new Array(20).fill(255);
 
 let dmxDriver;
 
@@ -24,7 +25,7 @@ class Driver {
         if ( universe ) console.log('Adding DMX driver to real universe')
         this.mode = 'normal';
         this.lights = new Map();
-        const rate = 1000 / 40
+        const rate = 1000 / 44; // standard DMX rate
         const run = async () => {
             for (const [address, light] of this.lights) {
                 // console.log('Run', address, light)
@@ -127,7 +128,7 @@ function startListening(portName) {
 function processESPMessage(data) {
     const message = data.toString().trim();
     console.log('Message', message)
-    if (message.startsWith('UDP: ')) {
+    if (!lightsUp && message.startsWith('UDP: ')) {
         const values = message.split(/[,:]/g);
         console.log(values)
 
@@ -212,7 +213,7 @@ const main = async () => {
     const espPort = await findESP8266Port();
     let serialPort;
     if (espPort) {
-        serialPort = startListening(espPort);  // Start the server on the found port
+        serialPort = startListening(espPort, ()=>lightsUp);  // Start the server on the found port
     } else {
         // runEmulation();
     }
@@ -225,7 +226,7 @@ const main = async () => {
     // Handle incoming WebSocket messages
     socket.on("lightsUp", (data) => {
         console.log("Received message:", data);
-
+        lightsUp = true;
         const colour = 0;
         const duration = 3000;
         const brightness = 1;
@@ -238,8 +239,8 @@ const main = async () => {
 
         // Send message to ESP8266 over serial
         if (serialPort?.isOpen) {
-            const message = 'CMD: UP' + "\n"; // Ensure newline termination
-            port.write(message, (err) => {
+            const message = '1'; // Ensure newline termination
+            serialPort.write(message, (err) => {
                 if (err) {
                     return console.error("Error writing to serial:", err.message);
                 }
@@ -251,7 +252,7 @@ const main = async () => {
 
     socket.on("lightsDown", (data) => {
         console.log("Received message:", data);
-
+        lightsUp = false;
         dmxDriver.unsync(-3000);
 
         if ( timer ){
@@ -261,8 +262,8 @@ const main = async () => {
 
         // Send message to ESP8266 over serial
         if (serialPort?.isOpen) {
-            const message = "CMD: DOWN\n"; // Ensure newline termination
-            port.write(message, (err) => {
+            const message = "0"; // Ensure newline termination
+            serialPort.write(message, (err) => {
                 if (err) {
                     return console.error("Error writing to serial:", err.message);
                 }
