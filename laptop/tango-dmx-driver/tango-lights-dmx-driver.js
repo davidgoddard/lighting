@@ -5,29 +5,31 @@ const io = require("socket.io-client");
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline'); // Correct import for Readline parser
 
-const SERVER_URL = 'http://192.168.68.62:80';
+const SERVER_URL = 'http://tandaplayerbt.local:80';
 
-let buffer = new Array(512).fill(0);
+let buffer = new Array(20).fill(0);
 
 let dmxDriver;
 
-function setColour(addr, r, g, b) {
-    buffer[addr] = r;
+function setColour(addr, r, g, b, w) {
+    buffer[addr + 0] = r;
     buffer[addr + 1] = g;
     buffer[addr + 2] = b;
+    buffer[addr + 3] = w;
 }
 
 class Driver {
 
     constructor(universe) {
+        if ( universe ) console.log('Adding DMX driver to real universe')
         this.mode = 'normal';
         this.lights = new Map();
         const rate = 1000 / 40
         const run = async () => {
             for (const [address, light] of this.lights) {
                 // console.log('Run', address, light)
-                const [r, g, b] = light.transition(this.mode);
-                setColour(address, r, g, b);
+                const [r, g, b, w] = light.transition(this.mode);
+                setColour(address, r, g, b, w);
             }
             // If no universe, assume debugging so still run just don't output!
             if (universe) universe.update(buffer);
@@ -37,6 +39,7 @@ class Driver {
     }
 
     addLight(address, light) {
+        console.log('Creating light on address', address)
         this.lights.set(address, light);
     }
 
@@ -66,11 +69,11 @@ async function findDMXPort() {
 
         // Loop through the available ports to find the DMX interface
         for (let port of ports) {
+            console.log(port)
             // Check if the port has a manufacturer or product identifier that matches the DMX
-            if (port.vendorId && port.vendorId == '1a86') {
+            if (port.manufacturer == 'FTDI') {
                 console.log(`Found DMX interface on port: ${port.path}`);
-                startListening(port.path);  // Start the server on the found port
-                return;
+                return port.path;
             }
         }
 
@@ -188,6 +191,7 @@ const main = async () => {
     const dmxInterfacePort = await findDMXPort();
     let universe;
     if (dmxInterfacePort) {
+        console.log('Creating DMX universe on port', dmxInterfacePort)
         universe = dmx.addUniverse('my_dmx_universe', 'enttec-open-usb-dmx', dmxInterfacePort);
     }
 
@@ -200,7 +204,7 @@ const main = async () => {
 
     dmxDriver = new Driver(universe);
     const dmxChannelSpacingPerLight = 5;
-    for (let address = 0; address < (dmxInterfacePort ? 4 : 2); address++) {
+    for (let address = 0; address < (dmxInterfacePort ? 2 : 2); address++) {
         dmxDriver.addLight(1 + (address * dmxChannelSpacingPerLight), new Light())
     }
 
@@ -234,7 +238,7 @@ const main = async () => {
 
         // Send message to ESP8266 over serial
         if (serialPort?.isOpen) {
-            const message = JSON.stringify(data) + "\n"; // Ensure newline termination
+            const message = 'CMD: UP' + "\n"; // Ensure newline termination
             port.write(message, (err) => {
                 if (err) {
                     return console.error("Error writing to serial:", err.message);
@@ -257,7 +261,7 @@ const main = async () => {
 
         // Send message to ESP8266 over serial
         if (serialPort?.isOpen) {
-            const message = JSON.stringify(data) + "\n"; // Ensure newline termination
+            const message = "CMD: DOWN\n"; // Ensure newline termination
             port.write(message, (err) => {
                 if (err) {
                     return console.error("Error writing to serial:", err.message);

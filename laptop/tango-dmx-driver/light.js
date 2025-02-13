@@ -1,9 +1,9 @@
-const DEBUG = true;
+const DEBUG = false;
 
 function getRandomColourAndDuration() {
     return {
         angle: Math.trunc(Math.random() * 360), // Random hue (0-360)
-        duration: Math.trunc(3000 + Math.random() * 15000), // 3 to 15 seconds in milliseconds
+        duration: Math.trunc(2000 + Math.random() * 10000), // 3 to 15 seconds in milliseconds
         brightness: 0.5 // always normal brightness
     };
 }
