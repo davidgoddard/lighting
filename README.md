@@ -1,121 +1,327 @@
-# uDMX colour wander
+# Lighting controller
 
-A standalone Node.js controller for a uDMX USB adapter that gives every configured RGB fixture an
-independent, continuously changing colour. Targets are fully saturated random
-hues. Transitions interpolate the hue along the shortest path around the
-saturated HSV colour-wheel edge, and each transition lasts a random 2–25 seconds
-by default.
+Lighting is a small Node.js application that drives room lighting through USB
+DMX adapters. It gives configured RGB fixtures continuously wandering colours,
+provides a browser control page, coordinates with an optional ESP table-lights
+bridge, and raises the room lights automatically while Tanda Forge plays a
+cortina.
 
-A virtual master continuously moves between random hues. When a master session
-begins, it randomly chooses between two and six transitions, completes that
-many shared colour transitions, then returns the fixtures to individual
-wandering for a separately configured random duration.
+The controller can send the same DMX universe to one or both supported USB
+adapter types:
 
-On switching to master mode, every fixture starts from its current hue and
-converges on the newly selected master target using the master's duration. While
-remaining in master mode, all later targets and timings are shared. On switching
-back, every fixture immediately resumes choosing independent targets and
-durations. Master transitions are never shorter than 15 seconds.
+- **Anyma/uDMX-compatible adapter** using USB control transfers. The usual USB
+  identity is `16c0:05dc`.
+- **FTDI Open DMX adapter** using a 250000-baud serial DMX stream. Select this by
+  serial number where possible, or by device path.
 
-If an ESP lighting bridge with USB vendor ID `1a86` is connected, the controller
-also listens to it at 115200 baud. Newline-delimited messages in the original
-`UDP: hue,durationMilliseconds,brightness,syncMode` format take control of the
-automatic lights. A `true` sync mode moves every wandering fixture toward the
-received hue over the received duration; `false` resumes individual wandering.
-Static colours selected in the web interface remain overrides. If the bridge is
-connected, it is the sole master authority and the local virtual master is
-suspended. If the bridge is missing or disconnects, the existing local
-virtual-master behaviour resumes.
+When both adapters are connected, each frame is mirrored to both. If one output
+disconnects, the controller continues on the other. At least one configured DMX
+output must be available when the application starts.
 
-The top-right **Lights up / Lights down** switch temporarily fades every fixture
-to its configured `lightsUpColour`, then fades back to the normal static or
-wandering output. The global `lightsUp.fadeUpSeconds` and
-`lightsUp.fadeDownSeconds` values set those transition times. Switching state
-also sends `1\n` or `0\n` to the ESP bridge, which may rebroadcast the state to
-ESP-NOW lights. The same state is available to local integrations through
-`POST /api/lights` with `{ "up": true }` or `{ "up": false }`.
+## Lighting behaviour
 
-`masterMode.transitionCount` controls the minimum and maximum number of shared
-transitions in each local master session, and `transitionSeconds` controls the
-virtual master's target durations. `masterMode.individualModeSeconds` controls
-how long the lights remain in individual mode before the next master session.
-`externalMaster` controls serial bridge discovery and can be disabled entirely.
+In normal operation every automatic fixture moves independently between random,
+fully saturated hues. Transitions follow the shortest route around the colour
+wheel and use the random duration range in `transitionSeconds`.
 
-## Setup
+The optional virtual master periodically gathers the automatic fixtures onto a
+shared hue and timing. It completes a random number of shared transitions and
+then returns them to independent wandering. Configure this with `masterMode`.
+Fixtures held at a static colour from the web page are not changed by normal or
+master wandering.
 
-Requires Node.js 18 or newer and at least one configured uDMX or FTDI-based Open
-DMX USB adapter.
+The separate **lights up** state temporarily overrides all normal and static
+colours. Each fixture fades to its own `lightsUpColour`; **lights down** fades
+back into the normal behaviour that has continued underneath. The global
+`lightsUp.fadeUpSeconds` and `lightsUp.fadeDownSeconds` settings control these
+two fade times.
 
-The same universe can also be mirrored to an FTDI-based Open DMX adapter. Enable
-`openDmx` in `config.json` and set its `serialNumber` (preferred) or `path`. The
-controller starts when either configured output is available, sends every frame
-to all connected outputs, and keeps running on the remaining output if one
-disconnects.
+## Installation and startup
 
-uDMX control transfers are retried briefly before an output is considered lost.
-For reliable continuous output, connect USB DMX adapters directly or use a
-powered hub; low-speed uDMX hardware can be unreliable behind cascaded,
-bus-powered hubs.
+Requirements:
+
+- Node.js 18 or newer.
+- At least one supported USB DMX adapter.
+- A valid `config.json` with non-overlapping fixture addresses.
+
+Install and start:
 
 ```sh
 npm install
 npm start
 ```
 
-Press Ctrl-C to send a blackout frame and close the adapter. A different config
-can be supplied with `node lighting.js path/to/config.json`.
-
-While the controller is running, open `http://localhost:8080`. Select one or
-more lights and drag the colour-wheel handle to hold them at a static hue.
-"Resume wandering" returns the selected lights to the automatic colour mode.
-The master-brightness slider applies immediately to every fixture in every
-colour mode. Fixtures with a dimmer channel use it directly; RGB-only fixtures
-are dimmed by scaling their RGB channel values.
-
-Select two or more fixtures and use **Pair / add** to make them behave as one.
-The first existing pair leader in the selection remains the leader; otherwise
-the first selected fixture becomes the leader. To extend a pair, select any one
-of its members together with the new fixtures and click **Pair / add**. Use
-**Unpair** to detach selected members without selecting the rest of their group.
-Change `webPort` in `config.json` if port 8080 is already in use.
-
-To verify a fixture's address and channel layout without any animation, run:
+To use a different configuration file:
 
 ```sh
-node lighting.js --diagnose
+node lighting.js path/to/config.json
 ```
 
-This holds blackout, isolated red, isolated green, isolated blue, and blackout
-for four seconds each while printing the exact transmitted fixture channels.
+The terminal reports the detected DMX output or outputs, the web address, and
+the ESP bridge status. Press Ctrl-C for an orderly shutdown: the application
+sends a blackout frame and closes its USB and serial devices.
 
-## Configuration
+## Web control page
 
-Edit `config.json`. DMX fixture addresses and channel offsets are one-based.
-Define each physical channel layout once under `fixtureTypes`, then associate
-fixtures with that type under `fixtures`.
+While Lighting is running, open:
 
-Each fixture may define its own RGB lights-up colour, for example
-`"lightsUpColour": { "red": 255, "green": 220, "blue": 170 }` for a warm
-white. It defaults to full RGB white when omitted. RGB is used instead of only
-hue and brightness because a hue-wheel colour is fully saturated and therefore
-cannot represent white.
+```text
+http://localhost:8080
+```
 
-The same value can be changed without hand-editing JSON: select one or more
-fixtures in the web interface, choose **Cortina colour**, and press **Apply to
-selected**. The controller applies it immediately and saves it to the active
-configuration file for future runs.
+The server listens on all network interfaces, so another device on the same
+network can use `http://<lighting-computer-address>:8080`. Change `webPort` if
+port 8080 is already occupied.
 
-`channelCount` is the entire footprint of the fixture, including channels this
-program does not use. Unmapped channels are sent as zero. The supported mapped
-roles are `red`, `green`, `blue`, and optional `brightness`. `fixedChannels`
-can also state required values explicitly; its keys are one-based offsets.
+The page provides:
 
-The common Anyma/uDMX USB ID is `16c0:05dc`. If the adapter has a different ID,
-replace `usb.vendorId` and `usb.productId`. On macOS, it can be found with:
+- **Lights up / Lights down** in the top-right corner. This fades the DMX
+  fixtures and also sends the state to the ESP bridge when connected.
+- **ESP status**, showing whether the table-lights bridge is detected and
+  whether it is supplying master or wandering targets.
+- **Fixture selection** and **Select all**.
+- A **colour wheel**. Moving it holds the selected fixtures at a static hue.
+- **Resume wandering**, which removes the static override from the selection.
+- **Pair / add**, which makes selected fixtures follow one leader, and
+  **Unpair**, which detaches selected members.
+- **Cortina colour**, an RGB picker for the selected fixtures' lights-up colour.
+  Press **Apply to selected** to apply it immediately and save it into the
+  active configuration file. RGB permits pure white, warm white, or a calibrated
+  colour for fixtures whose RGB white is unattractive.
+- **Master brightness**, which affects every fixture in every mode. Fixtures
+  with a brightness/dimmer channel receive this value directly; RGB-only
+  fixtures have their RGB values scaled.
+
+When several fixtures are selected, applying a cortina colour sets all of them
+to the chosen RGB value. Selecting a single fixture loads its saved cortina
+colour into the picker.
+
+## Fixture and channel configuration
+
+DMX addresses and channel offsets are one-based. Define a reusable physical
+layout under `fixtureTypes`, then assign that type and a start address to each
+entry in `fixtures`.
+
+The supplied configuration contains two example layouts:
+
+| Fixture type | Footprint | Channel mapping used by Lighting |
+| --- | ---: | --- |
+| `4ch-rgbw` | 4 channels | Red, green, blue; channel 4 (white) held at 0 |
+| `8ch-dimmer-rgbw` | 8 channels | Master brightness, red, green, blue; channels 5–8 held at 0 |
+
+These names describe the included fixture profiles, not hard-coded limits. A
+fixture type declares its entire `channelCount`, mapped `channels`, and any
+`fixedChannels`. Supported mapped roles are `red`, `green`, `blue`, and optional
+`brightness`. Unmapped channels are sent as zero. Fixed channels are useful for
+mode, strobe, or unused white channels that must stay at a known value.
+
+Example fixtures:
+
+```json
+{
+  "fixtureTypes": {
+    "4ch-rgbw": {
+      "channelCount": 4,
+      "channels": { "red": 1, "green": 2, "blue": 3 },
+      "fixedChannels": { "4": 0 }
+    },
+    "8ch-dimmer-rgbw": {
+      "channelCount": 8,
+      "channels": { "brightness": 1, "red": 2, "green": 3, "blue": 4 },
+      "fixedChannels": { "5": 0, "6": 0, "7": 0, "8": 0 }
+    }
+  },
+  "fixtures": [
+    {
+      "id": "floor-1",
+      "name": "Floor light",
+      "address": 1,
+      "type": "4ch-rgbw",
+      "lightsUpColour": { "red": 255, "green": 220, "blue": 170 }
+    },
+    {
+      "id": "washer-1",
+      "name": "Wall washer",
+      "address": 11,
+      "type": "8ch-dimmer-rgbw",
+      "lightsUpColour": { "red": 255, "green": 255, "blue": 255 }
+    }
+  ]
+}
+```
+
+`lightsUpColour` defaults to full RGB white if omitted. Hue plus brightness is
+not sufficient for this setting: the normal hue wheel is fully saturated, while
+white requires the RGB channels to be mixed together.
+
+Ensure fixture footprints do not overlap and do not extend beyond DMX channel
+512. For example, an eight-channel fixture beginning at address 121 occupies
+channels 121–128.
+
+## USB DMX adapters
+
+### Anyma/uDMX
+
+Configure the USB vendor and product IDs:
+
+```json
+"usb": {
+  "vendorId": "0x16c0",
+  "productId": "0x05dc"
+}
+```
+
+Lighting finds this device through USB rather than through a serial device path.
+Transfers are retried briefly before the output is treated as disconnected.
+Low-speed uDMX hardware can be unreliable behind cascaded bus-powered hubs; use
+a direct port or powered hub when possible.
+
+### FTDI Open DMX
+
+Enable the Open DMX output and identify it by serial number (preferred):
+
+```json
+"openDmx": {
+  "enabled": true,
+  "serialNumber": "BG00QGXZ"
+}
+```
+
+Alternatively specify its operating-system device `path`. A serial number is
+more stable because device paths can change after reconnection or reboot.
+
+On macOS, USB identities and serial numbers can be inspected with:
 
 ```sh
 system_profiler SPUSBDataType
 ```
 
-Only one program can control the adapter at a time. Stop QLC+, FreeStyler, or
-other DMX software before starting this script.
+Only one application can own an adapter at a time. Stop QLC+, FreeStyler, or any
+other DMX program before starting Lighting.
+
+## ESP table-lights bridge
+
+The ESP table-lights bridge is a separate project and is not included in this
+repository. It connects over USB serial and can rebroadcast lighting state to
+ESP-NOW-connected table lights.
+
+Lighting scans for the configured USB vendor ID (normally `1a86`) and opens the
+bridge at 115200 baud. Configure or disable it under `externalMaster`:
+
+```json
+"externalMaster": {
+  "enabled": true,
+  "vendorId": "0x1a86",
+  "baudRate": 115200,
+  "scanSeconds": 5
+}
+```
+
+The bridge and Lighting exchange newline-delimited messages:
+
+- Lighting sends `1` plus a newline for lights up and `0` plus a newline for
+  lights down. The bridge can rebroadcast that state to the table lights.
+- Lighting accepts `1`, `up`, or `lightsUp` as an incoming lights-up state and
+  `0`, `down`, or `lightsDown` as lights down.
+- The bridge can report an ESP-NOW colour target as
+  `UDP: hue,durationMilliseconds,brightness,syncMode`.
+
+When `syncMode` is `true`, automatic DMX fixtures move to the received hue over
+the supplied duration. When it is `false`, they resume individual wandering.
+While the bridge is connected it owns the master/wander decision, so the local
+virtual master is suspended. If it disconnects, local master operation resumes.
+Static web-page colour overrides remain in place.
+
+The ESP indicator initially says **awaiting data** because connection alone does
+not provide a colour target. It changes after a valid bridge message arrives.
+
+## Tanda Forge integration
+
+Tanda Forge treats Lighting as an optional local companion service:
+
+- When main-output cortina playback starts, Tanda Forge sends
+  `POST http://127.0.0.1:8080/api/lights` with `{ "up": true }`.
+- When the cortina pauses or finishes, or normal main playback takes over, it
+  sends `{ "up": false }`.
+- Lighting fades its DMX fixtures and forwards the same state to the ESP bridge,
+  keeping DMX room lights and ESP-NOW table lights together.
+- If Lighting is not running, Tanda Forge playback continues normally.
+
+Both applications must be running on the same computer when using the default
+localhost address, and Lighting must use port 8080. Restart both applications
+after changing their integration code or configuration.
+
+The `/api/lights` endpoint is also available to other local integrations. Send a
+JSON body containing a Boolean `up` property.
+
+## Diagnostics and operational help
+
+### Verify fixture addressing
+
+Use diagnostic mode with a configuration containing exactly one fixture:
+
+```sh
+node lighting.js --diagnose
+```
+
+It holds blackout, isolated red, isolated green, isolated blue, and blackout for
+four seconds each while printing the exact transmitted fixture channels. Use it
+to confirm the start address, channel order, dimmer channel, and polarity before
+enabling animation.
+
+### No configured DMX adapter was found
+
+- Confirm that at least one adapter is connected before startup.
+- Check the uDMX vendor/product IDs or the FTDI serial number/path.
+- Close other DMX software that may own the device.
+- Try a direct USB port or powered hub.
+- On macOS, inspect the hardware with `system_profiler SPUSBDataType`.
+
+### DMX output stops or flickers
+
+- Avoid an unpowered or cascaded USB hub, especially with uDMX hardware.
+- Check USB and DMX cabling and termination.
+- Reduce `fps` temporarily to determine whether the adapter or host cannot
+  sustain the configured frame rate.
+- If two adapters are enabled, read the terminal output to see which transport
+  failed; the surviving transport should continue.
+
+### ESP not detected
+
+- Confirm `externalMaster.enabled` is `true`.
+- Check that the bridge's USB vendor ID matches `externalMaster.vendorId`.
+- Confirm its firmware uses the configured baud rate and newline termination.
+- Wait at least `scanSeconds` after connecting it; Lighting rescans while running.
+- Check that no serial monitor has already opened the bridge port.
+
+### Tanda Forge does not raise the lights
+
+- Confirm the Lighting web page works at `http://127.0.0.1:8080` on the same
+  computer as Tanda Forge.
+- Test the web-page lights-up switch first; this separates Lighting/DMX/ESP
+  problems from the Tanda Forge notification.
+- Fully restart both applications after updating them.
+- Ensure Tanda Forge is playing the cortina on its **main output**, not merely a
+  headphone preview.
+- Inspect the Tanda Forge developer console for
+  `Could not notify the Lighting controller`.
+
+### Web page is unavailable
+
+- Confirm the terminal printed `Lighting controls: http://localhost:<port>`.
+- Check `webPort` and use that same port in the browser.
+- If controlling from another device, use the Lighting computer's LAN address
+  rather than `localhost`, and allow the port through its firewall.
+
+### Configuration errors
+
+Lighting validates the configuration at startup and prints an actionable error
+for invalid ranges, unknown fixture types, duplicated IDs, overlapping DMX
+addresses, or fixtures extending past channel 512. Correct the reported entry
+and restart the controller.
+
+Run the JavaScript syntax checks without opening hardware:
+
+```sh
+npm run check
+```
