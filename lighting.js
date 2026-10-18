@@ -1,3 +1,4 @@
+import { createDmxOutputs } from "./dmx-outputs.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import process from "node:process";
@@ -12,6 +13,7 @@ const CONFIG_PATH = new URL(configArgument ?? "./config.json", `file://${process
 const UDMX_SET_CHANNEL_RANGE = 0x02;
 const USB_VENDOR_DEVICE_OUT = 0x40;
 const DMX_CHANNELS = 512;
+const TABLE_LIGHTS_ID = "@table-lights";
 
 function fail(message) {
   throw new Error(message);
@@ -505,6 +507,9 @@ function parseExternalMasterMessage(line) {
 function createExternalMasterMonitor(config, states, mode) {
   if (!config.externalMaster.enabled) return { close: async () => {}, sendLightsUp: async () => false };
 
+  let tableState = null;
+  let lastFollowAt = -Infinity;
+  let lastFollowHue = null;
   let stopped = false;
   let port = null;
   let scanTimer = null;
@@ -538,6 +543,16 @@ function createExternalMasterMonitor(config, states, mode) {
       const parser = candidate.pipe(new ReadlineParser({ delimiter: "\n" }));
       parser.on("data", data => {
         const line = data.toString().trim();
+        if (line.startsWith("TABLE: ")) {
+          try {
+            const report = JSON.parse(line.slice(7));
+            if (typeof report.static === "boolean" && Number.isFinite(report.hue) && report.hue >= 0 && report.hue < 360) {
+              tableState = report;
+              if (!report.static) lastFollowHue = null;
+            }
+          } catch { /* Ignore incomplete or malformed reports. */ }
+          return;
+        }
         const normalized = line.toLowerCase().replace(/[\s_-]+/g, "");
         if (["1", "up", "lightsup"].includes(normalized)) {
           setLightsUp(config, mode, true);
@@ -561,6 +576,8 @@ function createExternalMasterMonitor(config, states, mode) {
       });
       candidate.once("close", () => {
         if (port === candidate) port = null;
+        tableState = null;
+        lastFollowHue = null;
         mode.externalConnected = false;
         mode.externalHasMessage = false;
         mode.externalPort = null;
@@ -586,6 +603,9 @@ function createExternalMasterMonitor(config, states, mode) {
         if (mode.name !== "individual") {
           setIndividualMode(config, states, mode, performance.now());
         }
+        candidate.write("BRIDGE?\n", error => {
+          if (error) console.warn(`Bridge handshake failed: ${error.message}`);
+        });
         console.log(`Listening for the external lighting master on ${match.path} at ${config.externalMaster.baudRate} baud.`);
       });
     } catch (error) {
@@ -594,8 +614,60 @@ function createExternalMasterMonitor(config, states, mode) {
     }
   };
 
+  const tableLeader = () => {
+    const anchor = states.find(state => state.fixture.id === mode.tablePairLeaderId);
+    return anchor ? pairLeader(states, anchor) : null;
+  };
+  const setTableColour = async hue => {
+    const connection = port;
+    if (!connection?.isOpen || !tableState) fail("Table lights bridge is unavailable or needs updated firmware");
+    await serialAction(done => connection.write(hue === null ? "WANDER\n" : `STATIC ${hue}\n`, done));
+    if (port === connection && tableState) tableState = { static: hue !== null, hue: hue ?? tableState.hue };
+  };
+  const syncTablePair = async (now = performance.now(), force = false) => {
+    const leader = tableLeader();
+    if (!leader || !port?.isOpen || !tableState || (!force && now - lastFollowAt < 50)) return;
+    const current = leader.staticHue ?? transitionHue(leader.transition, now);
+    const hue = ((Math.round(current * 100) / 100) % 360 + 360) % 360;
+    lastFollowAt = now;
+    if (!force && hue === lastFollowHue) return;
+    await setTableColour(hue);
+    lastFollowHue = hue;
+  };
   void scan();
   return {
+    tableLeader,
+    syncTablePair,
+    pairTable: async leader => {
+      if (!port?.isOpen || !tableState) fail("Table lights bridge is unavailable");
+      const previous = mode.tablePairLeaderId;
+      mode.tablePairLeaderId = leader.fixture.id;
+      try { await syncTablePair(performance.now(), true); }
+      catch (error) { mode.tablePairLeaderId = previous; throw error; }
+    },
+    unpairTable: async () => {
+      if (port?.isOpen && tableState) await setTableColour(null);
+      mode.tablePairLeaderId = null;
+      lastFollowHue = null;
+    },
+    tableFixture: () => {
+      if (!port?.isOpen || !tableState) return [];
+      const leader = tableLeader();
+      const now = performance.now();
+      const current = leader ? leader.staticHue ?? transitionHue(leader.transition, now) : tableState.hue;
+      return [{
+        id: TABLE_LIGHTS_ID, name: "Table lights", kind: "bridge",
+        mode: leader ? leader.staticHue === null ? "wander" : "static" : tableState.static ? "static" : "wander",
+        automaticMode: leader ? mode.name : "individual",
+        pairLeaderId: leader?.fixture.id ?? null, pairLeaderName: leader?.fixture.name ?? null,
+        hue: ((current % 360) + 360) % 360,
+        targetHue: leader ? leader.staticHue ?? ((leader.transition.toHue % 360) + 360) % 360 : null,
+        durationMs: leader && leader.staticHue === null
+          ? Math.max(0, (1 - transitionProgress(leader.transition, now)) * leader.transition.durationMs) : 0,
+        lightsUpColour: { red: 255, green: 255, blue: 255 }
+      }];
+    },
+    setTableColour,
     sendLightsUp: async up => {
       if (!port?.isOpen) return false;
       await serialAction(done => port.write(`${up ? "1" : "0"}\n`, done));
@@ -604,6 +676,9 @@ function createExternalMasterMonitor(config, states, mode) {
     close: async () => {
       stopped = true;
       clearTimeout(scanTimer);
+      if (mode.tablePairLeaderId && port?.isOpen && tableState) {
+        await setTableColour(null).catch(error => console.warn(`Could not release table lights: ${error.message}`));
+      }
       if (port?.isOpen) await new Promise(resolve => port.close(() => resolve()));
       port = null;
     }
@@ -715,10 +790,21 @@ async function createOpenDmxTransport(config) {
     parity: "none",
     autoOpen: false
   });
-  await serialAction(done => port.open(done));
+  let portError = null;
+  port.on("error", error => { portError = error; });
+  try {
+    await serialAction(done => port.open(done));
+  } catch (error) {
+    if (port.isOpen) await serialAction(done => port.close(done)).catch(() => {});
+    throw error;
+  }
   return {
     name: `Open DMX ${match.path}`,
-    send: universe => sendOpenDmxUniverse(port, universe),
+    send: universe => {
+      if (portError) throw portError;
+      if (!port.isOpen) throw new Error("Serial port disconnected");
+      return sendOpenDmxUniverse(port, universe);
+    },
     close: async () => {
       if (port.isOpen) await serialAction(done => port.close(done));
     }
@@ -726,35 +812,10 @@ async function createOpenDmxTransport(config) {
 }
 
 async function createTransport(config) {
-  const attempts = await Promise.allSettled([
-    createUdmxTransport(config),
-    createOpenDmxTransport(config)
+  return createDmxOutputs([
+    () => createUdmxTransport(config),
+    ...(config.openDmx.enabled ? [() => createOpenDmxTransport(config)] : [])
   ]);
-  const transports = [];
-  for (const attempt of attempts) {
-    if (attempt.status === "fulfilled" && attempt.value) transports.push(attempt.value);
-    if (attempt.status === "rejected") console.warn(`Could not open a DMX output: ${attempt.reason.message}`);
-  }
-  if (transports.length === 0) fail("No configured DMX adapter was found");
-
-  return {
-    get name() { return transports.map(transport => transport.name).join(" + "); },
-    async send(universe) {
-      const results = await Promise.allSettled(transports.map(transport => transport.send(universe)));
-      for (let index = results.length - 1; index >= 0; index -= 1) {
-        if (results[index].status === "rejected") {
-          console.error(`${transports[index].name} stopped: ${results[index].reason.message}`);
-          const [failed] = transports.splice(index, 1);
-          await failed.close().catch(() => {});
-        }
-      }
-      if (transports.length === 0) fail("All DMX outputs have disconnected");
-    },
-    async close() {
-      await Promise.allSettled(transports.map(transport => transport.close()));
-      transports.length = 0;
-    }
-  };
 }
 
 function json(response, status, value) {
@@ -784,7 +845,24 @@ async function persistLightsUpColours(updates) {
   await writeFile(CONFIG_PATH, `${JSON.stringify(source, null, 2)}\n`, "utf8");
 }
 
-function createWebServer(config, states, mode, controls, externalMaster) {
+function createWebServer(config, states, mode, controls, externalMaster, transport) {
+  const tableLeader = () => externalMaster.tableLeader?.();
+  const splitSelection = ids => {
+    const hasTable = Array.isArray(ids) && ids.includes(TABLE_LIGHTS_ID);
+    if (hasTable && !externalMaster.tableFixture?.().length) fail("Table lights bridge is unavailable");
+    const dmxIds = hasTable ? ids.filter(id => id !== TABLE_LIGHTS_ID) : ids;
+    const selected = hasTable && dmxIds.length === 0 ? [] : selectStates(states, dmxIds);
+    return { hasTable, selected };
+  };
+  const controlSelection = ids => {
+    const {hasTable, selected} = splitSelection(ids);
+    if (hasTable && tableLeader()) selected.push(tableLeader());
+    return {hasTable, matching: [...new Set(selected.map(state => pairLeader(states, state)))]};
+  };
+  const includeTable = updated => {
+    if (tableLeader() && updated.includes(tableLeader().fixture.id) && !updated.includes(TABLE_LIGHTS_ID)) updated.push(TABLE_LIGHTS_ID);
+    return updated;
+  };
   const eventClients = new Set();
   mode.broadcastTransition = payload => {
     const event = `event: transition\ndata: ${JSON.stringify(payload)}\n\n`;
@@ -829,6 +907,7 @@ function createWebServer(config, states, mode, controls, externalMaster) {
       if (request.method === "GET" && url.pathname === "/api/state") {
         const now = performance.now();
         json(response, 200, {
+          dmx: transport?.status ?? { connected: false, outputs: [] },
           masterBrightness: controls.masterBrightness,
           lightsUp: mode.lightsUp,
           externalMaster: {
@@ -860,7 +939,7 @@ function createWebServer(config, states, mode, controls, externalMaster) {
                 ? Math.max(0, (1 - transitionProgress(controllingState.transition, now)) * controllingState.transition.durationMs)
                 : 0
             };
-          })
+          }).concat(externalMaster.tableFixture?.() ?? [])
         });
         return;
       }
@@ -895,8 +974,9 @@ function createWebServer(config, states, mode, controls, externalMaster) {
       }
       if (request.method === "POST" && url.pathname === "/api/pair") {
         const body = await readJson(request);
-        const selected = selectStates(states, body.fixtureIds);
-        if (selected.length < 2) fail("Select at least two lights to pair or extend a pair");
+        const {hasTable, selected} = splitSelection(body.fixtureIds);
+        if (hasTable && tableLeader() && !selected.includes(tableLeader())) selected.push(tableLeader());
+        if (selected.length + (hasTable ? 1 : 0) < 2) fail("Select at least two lights to pair or extend a pair");
         const existingLeader = selected.map(state => pairLeader(states, state)).find(
           leader => leader.pairLeaderId !== null
         );
@@ -905,16 +985,21 @@ function createWebServer(config, states, mode, controls, externalMaster) {
         for (const state of selected) {
           for (const member of pairMembers(states, pairLeader(states, state))) members.add(member);
         }
+        if (hasTable) await externalMaster.pairTable(leader);
         for (const member of members) member.pairLeaderId = leader.fixture.id;
         json(response, 200, {
           leaderId: leader.fixture.id,
-          updated: [...members].map(state => state.fixture.id)
+          updated: includeTable([...members].map(state => state.fixture.id))
         });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/unpair") {
         const body = await readJson(request);
-        const selected = selectStates(states, body.fixtureIds);
+        const {hasTable, selected} = splitSelection(body.fixtureIds);
+        const oldTableLeader = tableLeader();
+        const oldTableMembers = oldTableLeader ? pairMembers(states, oldTableLeader) : [];
+        if (oldTableLeader) mode.tablePairLeaderId = oldTableLeader.fixture.id;
+        if (hasTable) await externalMaster.unpairTable();
         const selectedSet = new Set(selected);
         const groupIds = new Set(selected.map(state => state.pairLeaderId).filter(Boolean));
         const now = performance.now();
@@ -946,23 +1031,39 @@ function createWebServer(config, states, mode, controls, externalMaster) {
             }
           }
         }
+        if (hasTable) updated.add(TABLE_LIGHTS_ID);
+        else if (oldTableLeader && selectedSet.has(oldTableLeader)) {
+          const remaining = oldTableMembers.filter(state => !selectedSet.has(state));
+          if (remaining.length) mode.tablePairLeaderId = pairLeader(states, remaining[0]).fixture.id;
+          else await externalMaster.unpairTable();
+          updated.add(TABLE_LIGHTS_ID);
+        }
+        // A DMX leader with only the table group left is still a pair leader.
+        if (tableLeader()) tableLeader().pairLeaderId = tableLeader().fixture.id;
+        // Remove a self-only DMX pair after detaching the table group.
+        if (hasTable && oldTableLeader && pairMembers(states, oldTableLeader).length <= 1) oldTableLeader.pairLeaderId = null;
         json(response, 200, { updated: [...updated] });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/static") {
         const body = await readJson(request);
-        const matching = selectPairLeaders(states, body.fixtureIds);
+        const {hasTable, matching} = controlSelection(body.fixtureIds);
         const hue = Number(body.hue);
         if (!Number.isFinite(hue)) fail("hue must be a number");
         const normalizedHue = ((hue % 360) + 360) % 360;
+        if (hasTable && !tableLeader()) await externalMaster.setTableColour(normalizedHue);
         for (const state of matching) state.staticHue = normalizedHue;
         const updated = matching.flatMap(state => pairMembers(states, state)).map(state => state.fixture.id);
+        if (hasTable) updated.push(TABLE_LIGHTS_ID);
+        includeTable(updated);
+        await externalMaster.syncTablePair?.(performance.now(), true);
         json(response, 200, { updated, hue: normalizedHue });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/wander") {
         const body = await readJson(request);
-        const matching = selectPairLeaders(states, body.fixtureIds);
+        const {hasTable, matching} = controlSelection(body.fixtureIds);
+        if (hasTable && !tableLeader()) await externalMaster.setTableColour(null);
         const now = performance.now();
         for (const state of matching) {
           const fromHue = state.staticHue ?? transitionHue(state.transition, now);
@@ -974,6 +1075,9 @@ function createWebServer(config, states, mode, controls, externalMaster) {
           announceTransition(mode, state, now);
         }
         const updated = matching.flatMap(state => pairMembers(states, state)).map(state => state.fixture.id);
+        if (hasTable) updated.push(TABLE_LIGHTS_ID);
+        includeTable(updated);
+        await externalMaster.syncTablePair?.(performance.now(), true);
         json(response, 200, { updated });
         return;
       }
@@ -1034,7 +1138,7 @@ async function runDiagnostics(config, transport) {
     console.log(`${name.padEnd(10)} DMX ${fixture.address}-${fixture.address + fixture.type.channelCount - 1}: [${fixtureValues.join(", ")}]`);
     const endAt = performance.now() + 4000;
     while (performance.now() < endAt) {
-      await transport.send(universe);
+      if (!await transport.send(universe)) fail("Diagnostic stopped: no DMX output connected");
       await wait(1000 / config.fps);
     }
   }
@@ -1044,11 +1148,12 @@ async function main() {
   const config = validateConfig(JSON.parse(await readFile(CONFIG_PATH, "utf8")));
   const transport = await createTransport(config);
   console.log(
-    `Connected to ${transport.name}; controlling ${config.fixtures.length} fixtures at ${config.fps} FPS.`
+    `Lighting controller ready; ${config.fixtures.length} fixtures at ${config.fps} FPS.`
   );
 
   if (diagnosticMode) {
     try {
+      if (!transport.status.connected) fail("Diagnostics require a connected DMX output");
       await runDiagnostics(config, transport);
     } finally {
       await transport.send(Buffer.alloc(config.universeLength, 0));
@@ -1069,8 +1174,8 @@ async function main() {
     webServer?.closeAllConnections?.();
     await externalMaster?.close();
     try {
-      await transport.send(Buffer.alloc(config.universeLength, 0));
-      console.log(`\n${signal}: sent blackout and stopped.`);
+      const sent = await transport.send(Buffer.alloc(config.universeLength, 0));
+      console.log(`\n${signal}: ${sent ? "sent blackout and stopped" : "stopped (no DMX output connected)"}.`);
     } catch (error) {
       console.error(`\n${signal}: could not send blackout: ${error.message}`);
     } finally {
@@ -1084,7 +1189,7 @@ async function main() {
   const mode = createModeState(config, performance.now());
   const controls = { masterBrightness: config.masterBrightness, mode };
   externalMaster = createExternalMasterMonitor(config, states, mode);
-  webServer = createWebServer(config, states, mode, controls, externalMaster);
+  webServer = createWebServer(config, states, mode, controls, externalMaster, transport);
   webServer.listen(config.webPort, "0.0.0.0", () => {
     console.log(`Lighting controls: http://localhost:${config.webPort}`);
   });
@@ -1095,6 +1200,9 @@ async function main() {
     const now = performance.now();
     try {
       updateMode(config, states, mode, now);
+      await externalMaster.syncTablePair?.(now).catch(error => {
+        console.warn(`Could not update paired table lights: ${error.message}`);
+      });
       await transport.send(renderUniverse(config, states, now, controls));
     } catch (error) {
       console.error(`DMX write failed: ${error.message}`);

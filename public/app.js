@@ -92,7 +92,7 @@ function startLightTransition({ id, automaticMode, hue: fromHue, targetHue, dura
   const normalizedTarget = normalizedHue(targetHue);
   const affected = fixtures.filter(item => item.id === id || item.pairLeaderId === id);
   for (const fixture of affected) {
-    if (fixture.mode === "static") continue;
+    if (fixture.mode === "static" || (fixture.kind === "bridge" && !fixture.pairLeaderId)) continue;
     if (automaticMode) fixture.automaticMode = automaticMode;
     fixture.targetHue = normalizedTarget;
     const modeLabel = document.querySelector(`.light[data-id="${CSS.escape(fixture.id)}"] .mode-label`);
@@ -114,7 +114,7 @@ function normalizedHue(value) {
 }
 
 function showTarget(fixture) {
-  const show = fixture?.mode === "wander" && Number.isFinite(Number(fixture.targetHue));
+  const show = fixture?.kind !== "bridge" && fixture?.mode === "wander" && Number.isFinite(Number(fixture.targetHue));
   targetPointer.classList.toggle("visible", show);
   if (!show) return;
   const targetHue = normalizedHue(fixture.targetHue);
@@ -129,6 +129,12 @@ function syncWheelToSelection(initial = false) {
   if (initial || fixture.mode === "wander") {
     setHue(fixture.hue);
   }
+}
+
+function renderDmxStatus(dmx) {
+  document.querySelector("#dmx-status").textContent = dmx?.connected
+    ? `DMX connected · ${dmx.outputs.join(" + ")}`
+    : "DMX disconnected · reconnecting automatically. Table lights remain available.";
 }
 
 function renderEspStatus(externalMaster) {
@@ -148,8 +154,19 @@ async function refreshEspStatus() {
   try {
     const response = await fetch("/api/state");
     if (!response.ok) return;
-    const { externalMaster } = await response.json();
+    const { externalMaster, dmx, fixtures: latest } = await response.json();
     renderEspStatus(externalMaster);
+    renderDmxStatus(dmx);
+    if (!staticUpdateRunning && !staticUpdatePending && !dragging) {
+      const previous = fixtures.find(fixture => fixture.kind === "bridge");
+      const bridge = latest.find(fixture => fixture.kind === "bridge");
+      if (JSON.stringify(previous) !== JSON.stringify(bridge)) {
+        const selection = selectedIds();
+        fixtures = fixtures.filter(fixture => fixture.kind !== "bridge");
+        if (bridge) fixtures.push(bridge);
+        renderLightsPreservingSelection(selection);
+      }
+    }
   } catch {
     renderEspStatus(null);
   }
@@ -171,7 +188,7 @@ function hexToColour(hex) {
 
 function syncCortinaColourToSelection() {
   const selected = fixtures.filter(fixture => selectedIds().includes(fixture.id));
-  applyCortinaColourButton.disabled = selected.length === 0;
+  applyCortinaColourButton.disabled = selected.length === 0 || selected.some(fixture => fixture.kind === "bridge");
   if (selected.length) cortinaColourInput.value = colourToHex(selected[0].lightsUpColour);
 }
 
@@ -196,7 +213,7 @@ function updateSelectionSummary() {
 }
 
 function renderLights() {
-  lightsElement.replaceChildren(...fixtures.map(fixture => {
+  const cards = fixtures.map(fixture => {
     const label = document.createElement("label");
     label.className = "light";
     label.dataset.id = fixture.id;
@@ -204,11 +221,11 @@ function renderLights() {
     label.style.setProperty("--light-colour", `hsl(${fixture.hue} 100% 50%)`);
     const modeText = fixture.mode === "static"
       ? "Static"
-      : fixture.automaticMode === "master" ? "Master" : "Individual";
+      : fixture.kind === "bridge" ? "Automatic" : fixture.automaticMode === "master" ? "Master" : "Individual";
     const pairText = fixture.pairLeaderId === null
       ? ""
       : fixture.pairLeaderId === fixture.id ? " · Pair leader" : ` · Paired to ${fixture.pairLeaderName}`;
-    label.innerHTML = `<input type="checkbox" value="${fixture.id}"><span class="light-card"><span class="selection-check" aria-hidden="true">✓</span><span class="light-copy"><span class="light-name"></span><span class="light-meta"><span class="mode-label">${modeText}</span> · DMX ${fixture.address}<span class="pair-label"></span></span></span><i class="mode-dot" aria-label="Current colour"></i></span>`;
+    label.innerHTML = `<input type="checkbox" value="${fixture.id}"><span class="light-card"><span class="selection-check" aria-hidden="true">✓</span><span class="light-copy"><span class="light-name"></span><span class="light-meta"><span class="mode-label">${modeText}</span> · ${fixture.kind === "bridge" ? "All table lights" : `DMX ${fixture.address}`}<span class="pair-label"></span></span></span><i class="mode-dot" aria-label="Current colour"></i></span>`;
     label.querySelector(".light-name").textContent = fixture.name;
     label.querySelector(".pair-label").textContent = pairText;
     label.querySelector("input").addEventListener("change", () => {
@@ -216,7 +233,12 @@ function renderLights() {
       syncWheelToSelection(true);
     });
     return label;
-  }));
+  });
+  lightsElement.replaceChildren(...cards.filter((card, index) => fixtures[index].kind !== "bridge"));
+  const bridgePanel = document.querySelector("#bridge-panel");
+  const bridgeCards = cards.filter((card, index) => fixtures[index].kind === "bridge");
+  bridgePanel.hidden = bridgeCards.length === 0;
+  document.querySelector("#bridge-lights").replaceChildren(...bridgeCards);
   updateSelectionSummary();
 }
 
@@ -261,6 +283,7 @@ function scheduleStaticUpdate() {
     const ids = selectedIds();
     if (!ids.length) {
       staticUpdateRunning = false;
+      staticUpdatePending = false;
       return;
     }
     const requestedHue = hue;
@@ -287,6 +310,7 @@ function renderLightsPreservingSelection(ids) {
   renderLights();
   for (const input of document.querySelectorAll(".light input")) input.checked = ids.includes(input.value);
   updateSelectionSummary();
+  syncWheelToSelection();
 }
 
 wheel.addEventListener("pointerdown", event => {
@@ -332,7 +356,7 @@ applyCortinaColourButton.addEventListener("click", async () => {
   } catch (error) {
     status.textContent = error.message;
   } finally {
-    applyCortinaColourButton.disabled = selectedIds().length === 0;
+    syncCortinaColourToSelection();
   }
 });
 
@@ -405,6 +429,7 @@ try {
   displayBrightness(initialState.masterBrightness);
   displayLightsUp(initialState.lightsUp);
   renderEspStatus(initialState.externalMaster);
+  renderDmxStatus(initialState.dmx);
   renderLights();
   for (const fixture of fixtures) {
     if (fixture.mode === "wander") startLightTransition({

@@ -39,7 +39,13 @@
           <h2 id="lights-heading">Lights</h2>
           <button id="select-all" class="text-button" type="button">Select all</button>
         </div>
+        <p id="dmx-status" class="muted" role="status"></p>
         <div id="lights" class="lights" aria-live="polite"></div>
+        <section id="bridge-panel" hidden aria-labelledby="bridge-heading">
+          <h3 id="bridge-heading">Table lights</h3>
+          <p class="muted">One wireless group · colour and wandering controls. Brightness and cortina colour apply to DMX lights.</p>
+          <div id="bridge-lights" class="lights" aria-live="polite"></div>
+        </section>
       </section>
 
       <section class="panel colour-panel" aria-labelledby="colour-heading">

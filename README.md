@@ -15,8 +15,8 @@ adapter types:
   serial number where possible, or by device path.
 
 When both adapters are connected, each frame is mirrored to both. If one output
-disconnects, the controller continues on the other. At least one configured DMX
-output must be available when the application starts.
+disconnects, the controller continues on the other. Missing DMX outputs are retried every five seconds, including at startup. The
+web controls and ESP bridge remain available while DMX is disconnected.
 
 ## Lighting behaviour
 
@@ -53,7 +53,7 @@ two fade times.
 Requirements:
 
 - Node.js 18 or newer.
-- At least one supported USB DMX adapter.
+- A supported USB DMX adapter for DMX fixtures (optional for table-light control).
 - A valid `config.json` with non-overlapping fixture addresses.
 
 Install and start:
@@ -213,8 +213,8 @@ other DMX program before starting Lighting.
 
 ## ESP table-lights bridge
 
-The ESP table-lights bridge is a separate project and is not included in this
-repository. It connects over USB serial and can rebroadcast lighting state to
+The ESP table-lights bridge sketch is included at
+`table-lights/DMX-bridge/tango_light_3_DMX_bridge.ino`. It connects over USB serial and can rebroadcast lighting state to
 ESP-NOW-connected table lights.
 
 Lighting scans for the configured USB vendor ID (normally `1a86`) and opens the
@@ -281,7 +281,7 @@ four seconds each while printing the exact transmitted fixture channels. Use it
 to confirm the start address, channel order, dimmer channel, and polarity before
 enabling animation.
 
-### No configured DMX adapter was found
+### No DMX output connected
 
 - Confirm that at least one adapter is connected before startup.
 - Check the uDMX vendor/product IDs or the FTDI serial number/path.
@@ -296,7 +296,11 @@ enabling animation.
 - Reduce `fps` temporarily to determine whether the adapter or host cannot
   sustain the configured frame rate.
 - If two adapters are enabled, read the terminal output to see which transport
-  failed; the surviving transport should continue.
+  failed; the surviving transport continues. Disconnected outputs are retried
+  every five seconds and receive the current lighting state after reconnecting.
+- `LIBUSB_ERROR_NO_DEVICE` means the USB adapter became unavailable. The app
+  keeps the web controls and ESP bridge running while retrying the adapter.
+  The Lights panel displays the current DMX connection status.
 
 ### ESP not detected
 
@@ -357,3 +361,48 @@ An example of the kind of computer-to-fixture connection used in a small DMX
 lighting setup:
 
 ![Example laptop running Lighting's wandering-mode controls while connected to a DMX lighting fixture](docs/images/example-dmx-fixture-connection-with-lighting-app.png)
+
+### Table lights colour control
+
+With the updated bridge firmware, a **Table lights** panel appears automatically
+when the bridge reports its capabilities. Select its card (alone or alongside DMX
+fixtures) and use the colour wheel to hold the whole wireless group at a hue.
+**Resume wandering** restores the bridge's automatic sync/wander cycle. The table
+lights' firmware does not need changing.
+
+The bridge sends the held hue every 50 ms with a fresh 250 ms transition. It keeps
+its normal automatic sequence running separately for unselected DMX fixtures.
+The panel shows the requested group colour, not measured feedback from each light;
+individual wandering colours cannot be displayed. Master brightness and custom
+cortina RGB settings remain DMX-only. Global lights up/down still controls
+the table lights' existing white override.
+
+Select **Table lights** together with one or more DMX fixtures and click
+**Pair / add** to make the wireless group follow a DMX leader. Existing DMX pairs
+can be extended in the same way. Selecting either the tables or a DMX member then
+controls the whole pair: the colour wheel holds their colour and **Resume
+wandering** makes them follow the leader's automatic transitions. The app sends
+the leader's current hue to the bridge at most every 50 ms, so the table lights
+follow with a small smoothing delay rather than exact frame synchronisation.
+
+**Unpair** on Table lights restores the bridge's automatic behaviour. If you
+remove a DMX leader from a larger pair, the tables follow the remaining DMX
+leader; removing the last DMX member releases the tables. Pairing is kept during
+a bridge reconnect while the app runs, but is not saved across app restarts.
+An orderly app shutdown releases paired tables back to automatic mode. This uses
+the existing colour-control bridge firmware; no further upload is needed.
+
+USB commands are newline-delimited: `STATIC <hue>` (0–359.999), `WANDER`,
+`BRIDGE?`, and the existing `1`/`0` lights-up/down commands. The bridge responds
+with `TABLE: {"static":true,"hue":120}` status reports. Existing `UDP:` reports
+continue to describe the automatic sequence. Old bridge firmware remains usable
+for automatic lighting but does not expose the new panel. A bridge reboot clears
+the static override; reconnecting queries its current state.
+
+To build in Arduino IDE, put the sketch in a folder named
+`tango_light_3_DMX_bridge`, select your ESP8266 board/settings, and export the
+compiled binary. Only upload to the bridge, not the table lights.
+
+Run `node --test tests/bridge.test.mjs` to check serial capability detection,
+static/wander commands, invalid selection handling, and disconnection without
+opening real hardware.
