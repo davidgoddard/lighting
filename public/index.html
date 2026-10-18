@@ -22,7 +22,14 @@
           </button>
         </div>
       </div>
-      <h1>Set the room’s colour</h1>
+      <div class="titleline">
+        <h1>Set the room’s colour</h1>
+        <div class="title-brightness" aria-labelledby="brightness-heading">
+          <label id="brightness-heading" for="brightness">Master brightness</label>
+          <input id="brightness" type="range" min="0" max="255" value="255">
+          <output id="brightness-value" for="brightness">100%</output>
+        </div>
+      </div>
       <p class="intro">Choose one or more lights, then drag the handle around the wheel.</p>
     </header>
 
@@ -50,15 +57,6 @@
           <div id="pointer" class="pointer"><span class="handle" aria-hidden="true"></span></div>
         </div>
 
-        <div class="cortina-colour-control">
-          <label for="cortina-colour">
-            <span>Cortina colour</span>
-            <small>RGB allows white and warm white</small>
-          </label>
-          <input id="cortina-colour" type="color" value="#ffffff" aria-label="Cortina lights-up colour">
-          <button id="apply-cortina-colour" class="secondary" type="button" disabled>Apply to selected</button>
-        </div>
-
         <div class="actions">
           <div class="action-buttons">
             <button id="wander" class="secondary" type="button" disabled>Resume wandering</button>
@@ -67,21 +65,18 @@
           </div>
           <span id="status" role="status">Ready</span>
         </div>
-      </section>
-    </div>
 
-    <section class="panel master-panel" aria-labelledby="brightness-heading">
-      <div class="brightness-control">
-        <div class="brightness-heading">
-          <div>
-            <p class="eyebrow">All fixtures</p>
-            <h2 id="brightness-heading">Master brightness</h2>
-          </div>
-          <output id="brightness-value" for="brightness">100%</output>
+        <div class="cortina-colour-control">
+          <label for="cortina-colour">
+            <span>Cortina colour</span>
+            <small>RGB allows white and warm white</small>
+          </label>
+          <input id="cortina-colour" type="color" value="#ffffff" aria-label="Cortina lights-up colour">
+          <button id="apply-cortina-colour" class="secondary" type="button" disabled>Apply to selected</button>
         </div>
-        <input id="brightness" type="range" min="0" max="255" value="255" aria-label="Master brightness">
-      </div>
-    </section>
+      </section>
+
+    </div>
   </main>
   <script type="module" src="/app.js"></script>
 </body>

@@ -30,6 +30,18 @@ then returns them to independent wandering. Configure this with `masterMode`.
 Fixtures held at a static colour from the web page are not changed by normal or
 master wandering.
 
+### Individual and master modes
+
+In individual wandering mode, each fixture chooses and follows its own colour
+target:
+
+![Lighting web page showing fixtures in individual wandering mode, each with a different colour](docs/images/individual-wandering-mode.png)
+
+In synchronised master mode, every automatic fixture follows the shared master
+target and timing:
+
+![Lighting web page showing fixtures synchronised in master mode with the same colour](docs/images/synchronised-master-mode.png)
+
 The separate **lights up** state temporarily overrides all normal and static
 colours. Each fixture fades to its own `lightsUpColour`; **lights down** fades
 back into the normal behaviour that has continued underneath. The global
@@ -325,3 +337,23 @@ Run the JavaScript syntax checks without opening hardware:
 ```sh
 npm run check
 ```
+
+## Example hardware
+
+The following third-party product photographs are included only as visual
+examples. They are not project-owned images, endorsements, or purchasing
+recommendations. Check that any hardware you use meets the USB and DMX
+requirements described above.
+
+### USB DMX adapter
+
+A typical USB-to-DMX adapter with a three-pin XLR DMX connector:
+
+![Example USB-to-DMX adapter with a USB plug and three-pin XLR connector](docs/images/example-usb-dmx-adapter.webp)
+
+### Connection to a DMX light
+
+An example of the kind of computer-to-fixture connection used in a small DMX
+lighting setup:
+
+![Example laptop running Lighting's wandering-mode controls while connected to a DMX lighting fixture](docs/images/example-dmx-fixture-connection-with-lighting-app.png)
