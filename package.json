@@ -1,0 +1,19 @@
+{
+  "name": "udmx-colour-wander",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Smooth independent colour transitions for DMX fixtures through a uDMX adapter",
+  "type": "module",
+  "scripts": {
+    "start": "node lighting.js",
+    "check": "node --check lighting.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@serialport/parser-readline": "^13.0.0",
+    "serialport": "^13.0.0",
+    "usb": "^2.15.0"
+  }
+}

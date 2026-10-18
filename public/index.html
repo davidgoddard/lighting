@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Light colour control</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="topline">
+        <p class="eyebrow">uDMX control</p>
+        <div class="topline-actions">
+          <div id="esp-status" class="esp-status" data-connected="false" role="status">
+            <span class="esp-check" aria-hidden="true">✓</span>
+            <span id="esp-status-text">ESP not detected</span>
+          </div>
+          <button id="lights-up" class="lights-toggle" type="button" role="switch" aria-checked="false">
+            <span class="toggle-track" aria-hidden="true"><span></span></span>
+            <span id="lights-up-label">Lights down</span>
+          </button>
+        </div>
+      </div>
+      <h1>Set the room’s colour</h1>
+      <p class="intro">Choose one or more lights, then drag the handle around the wheel.</p>
+    </header>
+
+    <div class="controls-grid">
+      <section class="panel lights-panel" aria-labelledby="lights-heading">
+        <div class="section-heading">
+          <h2 id="lights-heading">Lights</h2>
+          <button id="select-all" class="text-button" type="button">Select all</button>
+        </div>
+        <div id="lights" class="lights" aria-live="polite"></div>
+      </section>
+
+      <section class="panel colour-panel" aria-labelledby="colour-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="colour-heading">Colour</h2>
+            <p id="selection-summary" class="muted">Select a light to begin</p>
+          </div>
+          <output id="hue-value">0°</output>
+        </div>
+
+        <div id="wheel" class="wheel" role="slider" tabindex="0" aria-label="Hue" aria-valuemin="0" aria-valuemax="359" aria-valuenow="0">
+          <div class="wheel-centre"><span id="swatch"></span></div>
+          <div id="target-pointer" class="pointer target-pointer" aria-hidden="true"><span class="handle"></span></div>
+          <div id="pointer" class="pointer"><span class="handle" aria-hidden="true"></span></div>
+        </div>
+
+        <div class="cortina-colour-control">
+          <label for="cortina-colour">
+            <span>Cortina colour</span>
+            <small>RGB allows white and warm white</small>
+          </label>
+          <input id="cortina-colour" type="color" value="#ffffff" aria-label="Cortina lights-up colour">
+          <button id="apply-cortina-colour" class="secondary" type="button" disabled>Apply to selected</button>
+        </div>
+
+        <div class="actions">
+          <div class="action-buttons">
+            <button id="wander" class="secondary" type="button" disabled>Resume wandering</button>
+            <button id="pair" class="secondary" type="button" disabled>Pair / add</button>
+            <button id="unpair" class="secondary" type="button" disabled>Unpair</button>
+          </div>
+          <span id="status" role="status">Ready</span>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel master-panel" aria-labelledby="brightness-heading">
+      <div class="brightness-control">
+        <div class="brightness-heading">
+          <div>
+            <p class="eyebrow">All fixtures</p>
+            <h2 id="brightness-heading">Master brightness</h2>
+          </div>
+          <output id="brightness-value" for="brightness">100%</output>
+        </div>
+        <input id="brightness" type="range" min="0" max="255" value="255" aria-label="Master brightness">
+      </div>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

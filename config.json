@@ -1,0 +1,215 @@
+{
+  "fps": 40,
+  "transitionSeconds": {
+    "min": 8,
+    "max": 40
+  },
+  "masterMode": {
+    "enabled": true,
+    "transitionCount": {
+      "min": 2,
+      "max": 6
+    },
+    "individualModeSeconds": {
+      "min": 30,
+      "max": 180
+    },
+    "transitionSeconds": {
+      "min": 8,
+      "max": 25
+    }
+  },
+  "externalMaster": {
+    "enabled": true,
+    "vendorId": "0x1a86",
+    "baudRate": 115200,
+    "scanSeconds": 5
+  },
+  "masterBrightness": 255,
+  "lightsUp": {
+    "fadeUpSeconds": 3,
+    "fadeDownSeconds": 3
+  },
+  "webPort": 8080,
+  "usb": {
+    "vendorId": "0x16c0",
+    "productId": "0x05dc"
+  },
+  "openDmx": {
+    "enabled": true,
+    "serialNumber": "BG00QGXZ"
+  },
+  "fixtureTypes": {
+    "4ch-rgbw": {
+      "channelCount": 4,
+      "channels": {
+        "red": 1,
+        "green": 2,
+        "blue": 3
+      },
+      "fixedChannels": {
+        "4": 0
+      }
+    },
+    "8ch-dimmer-rgbw": {
+      "channelCount": 8,
+      "channels": {
+        "brightness": 1,
+        "red": 2,
+        "green": 3,
+        "blue": 4
+      },
+      "fixedChannels": {
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0
+      }
+    }
+  },
+  "fixtures": [
+    {
+      "id": "light-1",
+      "name": "Light 1",
+      "address": 1,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-2",
+      "name": "Light 2",
+      "address": 11,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-3",
+      "name": "Light 3",
+      "address": 21,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-4",
+      "name": "Light 4",
+      "address": 31,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-5",
+      "name": "Small 1",
+      "address": 41,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-6",
+      "name": "Small 2",
+      "address": 51,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-7",
+      "name": "Small 3",
+      "address": 61,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-8",
+      "name": "Small 4",
+      "address": 71,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-9",
+      "name": "Small 5",
+      "address": 81,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-10",
+      "name": "Small 6",
+      "address": 91,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-11",
+      "name": "Small 7",
+      "address": 101,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "light-12",
+      "name": "Small 8",
+      "address": 111,
+      "type": "4ch-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    },
+    {
+      "id": "washer-1",
+      "name": "Wall Washer",
+      "address": 121,
+      "type": "8ch-dimmer-rgbw",
+      "lightsUpColour": {
+        "red": 46,
+        "green": 81,
+        "blue": 255
+      }
+    }
+  ]
+}
