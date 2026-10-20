@@ -77,7 +77,7 @@ h2 { margin: 0; font-size: 1rem; letter-spacing: -.01em; }
 .light-meta { color: #8f8c84; font-size: .72rem; }
 .mode-label { color: #bbb8af; font-weight: 700; }
 .pair-label { color: #d7b6ee; }
-.mode-dot { display: block; width: 32px; height: 32px; flex: 0 0 32px; margin-left: auto; border: 4px solid #fff; border-radius: 50%; background: var(--light-colour); box-shadow: 0 4px 18px #000c, 0 0 18px color-mix(in srgb, var(--light-colour) 55%, transparent); filter: brightness(var(--light-value, 1)); transition: filter .35s; }
+.mode-dot { display: block; width: 32px; height: 32px; flex: 0 0 32px; margin-left: auto; border: 4px solid #fff; border-radius: 50%; background: var(--light-colour); box-shadow: 0 4px 18px #000c, 0 0 18px color-mix(in srgb, var(--light-colour) 55%, transparent); }
 
 #hue-value { min-width: 3ch; font: 600 1.35rem/1 ui-monospace, monospace; color: #cbc8be; }
 .wheel { position: relative; width: 220px; height: 220px; margin: 30px auto 26px; border-radius: 50%; background: conic-gradient(red, #ff0, lime, cyan, blue, #f0f, red); cursor: grab; touch-action: none; user-select: none; box-shadow: 0 16px 40px #0008; }

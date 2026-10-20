@@ -89,13 +89,17 @@
         <label class="music-toggle"><input id="music-enabled" type="checkbox"> Enabled</label>
       </div>
       <div class="music-controls">
-        <label>Influence <input id="music-influence" type="range" min="0" max="100"><output></output></label>
-        <label>Transition speed <input id="music-speed" type="range" min="50" max="300" step="10"><output></output></label>
-        <label>Minimum brightness <input id="music-min" type="range" min="0" max="100"><output></output></label>
-        <label>Maximum brightness <input id="music-max" type="range" min="0" max="100"><output></output></label>
+        <label>Minimum brightness <input id="music-min" type="range" min="0" max="65"><output></output></label>
+        <label>Maximum brightness <input id="music-max" type="range" min="50" max="100"><output></output></label>
         <label>Gamma <input id="music-gamma" type="range" min="0.4" max="2" step="0.05"><output></output></label>
+        <label>Rhythmic momentum influence <input id="music-rhythm" type="range" min="0" max="200"><output></output></label>
+        <label>Above-average energy influence <input id="music-energy" type="range" min="0" max="100"><output></output></label>
+        <label>Movement relaxation <input id="music-relaxation" type="range" min="400" max="5000" step="100"><output></output></label>
+        <label>Colour step speed <input id="music-speed" type="range" min="25" max="400"><output></output></label>
+        <label>Exceptional kick threshold <input id="music-kick-threshold" type="range" min="20" max="100"><output></output></label>
+        <label>Exceptional kick colour time <input id="music-kick-time" type="range" min="250" max="1400" step="50"><output></output></label>
         <label>AV delay <input id="music-delay" type="range" min="-500" max="1000" step="10"><output></output></label>
-        <label class="music-check"><input id="music-pauses" type="checkbox"> Dramatic pause accents</label>
+        <label class="music-check"><input id="music-structure" type="checkbox"> Structure effects</label>
       </div>
       <div class="music-metrics"><span id="music-features">Waiting for analysis</span><span id="music-output">Music disabled</span></div>
       <button id="music-reset" class="secondary" type="button">Reset defaults</button>

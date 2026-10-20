@@ -18,13 +18,19 @@ const lightsUpLabel = document.querySelector("#lights-up-label");
 const cortinaColourInput = document.querySelector("#cortina-colour");
 const applyCortinaColourButton = document.querySelector("#apply-cortina-colour");
 const musicInputs = {
-  enabled: document.querySelector("#music-enabled"), influencePercent: document.querySelector("#music-influence"),
-  transitionSpeedPercent: document.querySelector("#music-speed"), minimumBrightnessPercent: document.querySelector("#music-min"),
+  enabled: document.querySelector("#music-enabled"), minimumBrightnessPercent: document.querySelector("#music-min"),
   maximumBrightnessPercent: document.querySelector("#music-max"), gamma: document.querySelector("#music-gamma"),
-  avDelayMs: document.querySelector("#music-delay"), dramaticPausesEnabled: document.querySelector("#music-pauses")
+  rhythmicMomentumInfluencePercent: document.querySelector("#music-rhythm"),
+  aboveAverageEnergyInfluencePercent: document.querySelector("#music-energy"),
+  movementRelaxationMs: document.querySelector("#music-relaxation"), colourStepSpeedPercent: document.querySelector("#music-speed"),
+  exceptionalKickThresholdPercent: document.querySelector("#music-kick-threshold"),
+  exceptionalKickColourTimeMs: document.querySelector("#music-kick-time"),
+  avDelayMs: document.querySelector("#music-delay"), structureEffectsEnabled: document.querySelector("#music-structure")
 };
-const musicDefaults = { enabled: false, influencePercent: 100, transitionSpeedPercent: 220,
-  minimumBrightnessPercent: 25, maximumBrightnessPercent: 100, gamma: 1.05, avDelayMs: 0, dramaticPausesEnabled: true };
+const musicDefaults = { enabled: false, minimumBrightnessPercent: 25, maximumBrightnessPercent: 100, gamma: 1.05,
+  rhythmicMomentumInfluencePercent: 100, aboveAverageEnergyInfluencePercent: 75, movementRelaxationMs: 2500,
+  colourStepSpeedPercent: 220, exceptionalKickThresholdPercent: 90, exceptionalKickColourTimeMs: 650,
+  avDelayMs: 0, structureEffectsEnabled: true };
 let fixtures = [];
 let hue = 0;
 let dragging = false;
@@ -35,7 +41,7 @@ let brightnessTimer;
 let lightsUp = false;
 let musicSaveTimer;
 
-function renderMusic(music, visibleFixtures = fixtures) {
+function renderMusic(music) {
   if (!music) return;
   const labels = { NO_TRACK: "No track", ANALYSING: "Analysing — current lighting held", READY: "Music profile ready", PAUSED: "Playback paused", UNAVAILABLE: "Music analysis unavailable" };
   const statusLabel = music.kind === "cortina"
@@ -45,29 +51,27 @@ function renderMusic(music, visibleFixtures = fixtures) {
   for (const [name, input] of Object.entries(musicInputs)) {
     const value = music.config[name]; if (input.type === "checkbox") input.checked = Boolean(value); else input.value = String(value);
     const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = name === "gamma" ? Number(value).toFixed(2) : name === "avDelayMs" ? `${value} ms` : `${value}%`;
+    if (output) output.textContent = name === "gamma" ? Number(value).toFixed(2)
+      : ["avDelayMs", "movementRelaxationMs", "exceptionalKickColourTimeMs"].includes(name) ? `${value} ms` : `${value}%`;
   }
   const feature = music.intent?.feature;
   document.querySelector("#music-features").textContent = feature
-    ? `Intensity ${Math.round(feature.intensity * 100)}% · fast energy ${Math.round(feature.fastEnergy * 100)}% · activity ${Math.round(feature.fastActivity * 100)}% · drive ${Math.round(feature.drive * 100)}% · ${feature.trend.toLowerCase()}` : "Waiting for analysis";
+    ? `Energy ${Math.round(feature.fastEnergy * 100)}% · phrase ${Math.round(feature.phrase * 100)}% · development ${Math.round(feature.development * 100)}% · momentum ${Math.round(feature.rhythm.momentum * 100)}%` : "Waiting for analysis";
   const timing = Number.isFinite(music.positionSeconds) && Number.isFinite(music.durationSeconds)
     ? ` · ${Math.floor(music.positionSeconds / 60)}:${String(Math.floor(music.positionSeconds % 60)).padStart(2, "0")} / ${Math.floor(music.durationSeconds / 60)}:${String(Math.floor(music.durationSeconds % 60)).padStart(2, "0")}` : "";
   const analysis = Number.isFinite(music.analysisMs) ? ` · analysed in ${(music.analysisMs / 1000).toFixed(1)}s` : "";
   document.querySelector("#music-output").textContent = music.intent
-    ? `Value ${Math.round(music.intent.brightness * 100)}% · ${music.intent.hueRate.toFixed(1)}°/s${music.intent.accent ? ` · ${music.intent.accent.phase} accent (${Math.round(music.intent.accent.score * 100)}%)` : ""}${timing}${analysis}`
+    ? `Value ${Math.round(music.intent.brightness * 100)}% · character ${Math.round(music.intent.character * 100)}%` +
+      ` · ${music.intent.stepRate.toFixed(2)} colour steps/s · ${music.intent.structure.mode}` +
+      `${music.intent.kick?.triggered ? " · exceptional kick" : ""}${timing}${analysis}`
     : `Legacy lighting output${timing}${analysis}`;
-  const musicValue = music.intent?.brightness ?? 1;
-  for (const fixture of visibleFixtures) {
-    const card = document.querySelector(`.light[data-id="${CSS.escape(fixture.id)}"]`);
-    const value = fixture.kind !== "bridge" && fixture.mode === "wander" ? musicValue : 1;
-    card?.style.setProperty("--light-value", String(value));
-  }
 }
 
 function scheduleMusicSave() {
   for (const [name, input] of Object.entries(musicInputs)) {
     const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = name === "gamma" ? Number(input.value).toFixed(2) : name === "avDelayMs" ? `${input.value} ms` : `${input.value}%`;
+    if (output) output.textContent = name === "gamma" ? Number(input.value).toFixed(2)
+      : ["avDelayMs", "movementRelaxationMs", "exceptionalKickColourTimeMs"].includes(name) ? `${input.value} ms` : `${input.value}%`;
   }
   clearTimeout(musicSaveTimer);
   musicSaveTimer = setTimeout(async () => {
@@ -125,26 +129,30 @@ function trackedFixture() {
 
 function animateLightTargets(now) {
   for (const [id, transition] of lightTransitions) {
-    const progress = transition.durationMs === 0
+    const rawProgress = transition.durationMs === 0
       ? 1
       : Math.min(1, (now - transition.startedAt) / transition.durationMs);
+    const progress = transition.easing === "easeOutQuad" ? 1 - (1 - rawProgress) ** 2
+      : transition.easing === "easeOut" ? 1 - (1 - rawProgress) ** 3 : rawProgress;
     const currentHue = (transition.fromHue + transition.distance * progress + 360) % 360;
     const fixture = fixtures.find(item => item.id === id);
     if (fixture) fixture.hue = currentHue;
     const card = document.querySelector(`.light[data-id="${CSS.escape(id)}"]`);
-    card?.style.setProperty("--light-colour", `hsl(${currentHue} 100% 50%)`);
+    const displayed = fixture?.finalRgb;
+    card?.style.setProperty("--light-colour", displayed
+      ? `rgb(${displayed.red} ${displayed.green} ${displayed.blue})` : `hsl(${currentHue} 100% 50%)`);
     const tracked = trackedFixture();
     if (
       !dragging && tracked?.id === id && fixture?.mode === "wander"
     ) {
       setHue(currentHue);
     }
-    if (progress >= 1) lightTransitions.delete(id);
+    if (rawProgress >= 1) lightTransitions.delete(id);
   }
   animationFrame = lightTransitions.size ? requestAnimationFrame(animateLightTargets) : undefined;
 }
 
-function startLightTransition({ id, automaticMode, hue: fromHue, targetHue, durationMs }) {
+function startLightTransition({ id, automaticMode, hue: fromHue, targetHue, durationMs, easing = "linear" }) {
   const normalizedFrom = normalizedHue(fromHue);
   const normalizedTarget = normalizedHue(targetHue);
   const affected = fixtures.filter(item => item.id === id || item.pairLeaderId === id);
@@ -158,6 +166,7 @@ function startLightTransition({ id, automaticMode, hue: fromHue, targetHue, dura
       fromHue: normalizedFrom,
       distance: shortestHueDistance(normalizedFrom, normalizedTarget),
       durationMs: Math.max(0, Number(durationMs)),
+      easing,
       startedAt: performance.now()
     });
   }
@@ -213,7 +222,7 @@ async function refreshEspStatus() {
     if (!response.ok) return;
     const latestState = await response.json();
     const { externalMaster, dmx, fixtures: latest } = latestState;
-    renderMusic(latestState.music, latest);
+    renderMusic(latestState.music);
     renderEspStatus(externalMaster);
     renderDmxStatus(dmx);
     if (!staticUpdateRunning && !staticUpdatePending && !dragging) {
@@ -284,8 +293,9 @@ function renderLights() {
     label.className = "light";
     label.dataset.id = fixture.id;
     label.dataset.mode = fixture.mode;
-    label.style.setProperty("--light-colour", `hsl(${fixture.hue} 100% 50%)`);
-    label.style.setProperty("--light-value", "1");
+    label.style.setProperty("--light-colour", fixture.finalRgb
+      ? `rgb(${fixture.finalRgb.red} ${fixture.finalRgb.green} ${fixture.finalRgb.blue})`
+      : `hsl(${fixture.hue} 100% 50%)`);
     const modeText = fixture.mode === "static"
       ? "Static"
       : fixture.kind === "bridge" ? "Automatic" : fixture.automaticMode === "master" ? "Master" : "Individual";
@@ -498,7 +508,7 @@ try {
   renderEspStatus(initialState.externalMaster);
   renderDmxStatus(initialState.dmx);
   renderLights();
-  renderMusic(initialState.music, initialState.fixtures);
+  renderMusic(initialState.music);
   for (const fixture of fixtures) {
     if (fixture.mode === "wander") startLightTransition({
       id: fixture.id,
@@ -510,6 +520,14 @@ try {
   const events = new EventSource("/api/events");
   events.addEventListener("transition", event => startLightTransition(JSON.parse(event.data)));
   events.addEventListener("lights-up", event => displayLightsUp(JSON.parse(event.data).up));
+  events.addEventListener("output", event => {
+    for (const output of JSON.parse(event.data)) {
+      const fixture = fixtures.find(item => item.id === output.id);
+      if (fixture) Object.assign(fixture, { hue: output.hue, finalRgb: output.rgb, finalBrightness: output.brightness });
+      document.querySelector(`.light[data-id="${CSS.escape(output.id)}"]`)?.style.setProperty(
+        "--light-colour", `rgb(${output.rgb.red} ${output.rgb.green} ${output.rgb.blue})`);
+    }
+  });
   setHue(fixtures[0]?.hue ?? 0);
   setInterval(refreshEspStatus, 1000);
 } catch (error) {

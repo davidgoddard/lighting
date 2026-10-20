@@ -1,136 +1,107 @@
 import { spawn } from "node:child_process";
 import { parentPort, workerData } from "node:worker_threads";
 
-const SAMPLE_RATE = 11025, WINDOW = 1024, WINDOW_SEC = WINDOW / SAMPLE_RATE;
-const clamp = (n, a = 0, b = 1) => Math.min(b, Math.max(a, n));
-const avg = (array, from, to, key) => {
-  const start = Math.max(0, Math.floor(from)), end = Math.min(array.length, Math.ceil(to));
-  if (end <= start) return 0;
-  let sum = 0; for (let index = start; index < end; index += 1) sum += key ? array[index][key] : array[index];
-  return sum / (end - start);
-};
-const percentile = (sorted, q) => {
-  if (!sorted.length) return 0;
-  const index = clamp(q, 0, 1) * (sorted.length - 1), a = Math.floor(index), b = Math.ceil(index);
-  return sorted[a] + (sorted[b] - sorted[a]) * (index - a);
-};
+// Direct server-side port of tango-light-momentum-edges-prototype.
+const RATE = 11025, N = 1024, HOP = 256, BANDS = [[40, 200], [200, 2000], [2000, 5000]];
+const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 
-function spectralFrame(samples, previousBands) {
-  const real = new Float64Array(WINDOW), imag = new Float64Array(WINDOW); let power = 0;
-  for (let index = 0; index < WINDOW; index += 1) {
-    const sample = samples[index]; power += sample * sample;
-    real[index] = sample * (.5 - .5 * Math.cos(2 * Math.PI * index / (WINDOW - 1)));
+function fft(real, imag) {
+  const n = real.length;
+  for (let i = 1, j = 0; i < n; i += 1) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+    if (i < j) { [real[i], real[j]] = [real[j], real[i]]; [imag[i], imag[j]] = [imag[j], imag[i]]; } }
+  for (let length = 2; length <= n; length <<= 1) {
+    const theta = -2 * Math.PI / length, wr = Math.cos(theta), wi = Math.sin(theta);
+    for (let offset = 0; offset < n; offset += length) { let ar = 1, ai = 0;
+      for (let j = 0; j < length / 2; j += 1) { const a = offset + j, b = a + length / 2;
+        const tr = real[b] * ar - imag[b] * ai, ti = real[b] * ai + imag[b] * ar;
+        real[b] = real[a] - tr; imag[b] = imag[a] - ti; real[a] += tr; imag[a] += ti;
+        const nr = ar * wr - ai * wi; ai = ar * wi + ai * wr; ar = nr; } }
   }
-  for (let j = 0, index = 1; index < WINDOW; index += 1) {
-    let bit = WINDOW >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
-    if (index < j) { [real[index], real[j]] = [real[j], real[index]]; [imag[index], imag[j]] = [imag[j], imag[index]]; }
-  }
-  for (let length = 2; length <= WINDOW; length <<= 1) {
-    const angle = -2 * Math.PI / length, wr = Math.cos(angle), wi = Math.sin(angle);
-    for (let offset = 0; offset < WINDOW; offset += length) {
-      let cr = 1, ci = 0;
-      for (let k = 0; k < length / 2; k += 1) {
-        const u = offset + k, v = u + length / 2;
-        const vr = real[v] * cr - imag[v] * ci, vi = real[v] * ci + imag[v] * cr;
-        real[v] = real[u] - vr; imag[v] = imag[u] - vi; real[u] += vr; imag[u] += vi;
-        [cr, ci] = [cr * wr - ci * wi, cr * wi + ci * wr];
-      }
-    }
-  }
-  const bands = new Float64Array(24);
-  for (let k = 3; k < WINDOW / 2; k += 1) {
-    const hz = k * SAMPLE_RATE / WINDOW; if (hz > 4500) break;
-    const band = Math.max(0, Math.min(23, Math.floor(Math.log2(hz / 30) / Math.log2(4500 / 30) * 24)));
-    bands[band] += Math.hypot(real[k], imag[k]);
-  }
-  let positive = 0, total = 0;
-  for (let index = 0; index < bands.length; index += 1) {
-    positive += Math.max(0, bands[index] - (previousBands?.[index] || 0)); total += bands[index];
-  }
-  return { db: 20 * Math.log10(Math.sqrt(power / WINDOW) + 1e-9), flux: positive / (total + 1e-8), bands };
 }
 
 function decode(input) {
   return new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", ["-hide_banner", "-nostdin", "-loglevel", "error", "-i", input,
-      "-vn", "-sn", "-dn", "-ac", "1", "-ar", String(SAMPLE_RATE), "-f", "f32le", "pipe:1"], { stdio: ["ignore", "pipe", "pipe"] });
-    const frames = []; let buffer = Buffer.alloc(0), previous = null, stderr = "", settled = false;
+      "-vn", "-sn", "-dn", "-ac", "1", "-ar", String(RATE), "-f", "f32le", "pipe:1"], { stdio: ["ignore", "pipe", "pipe"] });
+    const chunks = []; let stderr = "", settled = false;
     child.once("error", error => { settled = true; reject(new Error(`Cannot launch ffmpeg: ${error.message}`)); });
     child.stderr.on("data", data => { if (stderr.length < 4096) stderr += data.toString(); });
-    child.stdout.on("data", data => {
-      buffer = Buffer.concat([buffer, data]); const bytes = WINDOW * 4; let offset = 0;
-      while (buffer.length - offset >= bytes) {
-        const samples = new Float32Array(WINDOW);
-        for (let index = 0; index < WINDOW; index += 1) samples[index] = buffer.readFloatLE(offset + index * 4);
-        const frame = spectralFrame(samples, previous); frames.push({ t: frames.length * WINDOW_SEC, db: frame.db, flux: frame.flux });
-        previous = frame.bands; offset += bytes;
-      }
-      if (offset) buffer = buffer.subarray(offset);
-    });
-    child.once("close", code => {
-      if (settled) return; if (code !== 0) reject(new Error(`ffmpeg failed (${code}): ${stderr.trim()}`));
-      else if (!frames.length) reject(new Error("No decodable audio samples")); else resolve(frames);
-    });
+    child.stdout.on("data", data => chunks.push(data));
+    child.once("close", code => { if (settled) return;
+      if (code !== 0) reject(new Error(`ffmpeg failed (${code}): ${stderr.trim()}`));
+      else { const decoded = Buffer.concat(chunks);
+        if (decoded.length < N * 4) reject(new Error("No decodable audio samples"));
+        else resolve(new Float32Array(decoded.buffer, decoded.byteOffset, Math.floor(decoded.byteLength / 4))); } });
   });
 }
 
-function generateProfile(frames) {
-  const fps = 1 / WINDOW_SEC;
-  const dbs = frames.map(frame => frame.db).filter(n => n > -85).sort((a, b) => a - b);
-  const floor = percentile(dbs, .12), ceiling = percentile(dbs, .92), span = Math.max(10, ceiling - floor);
-  const fluxes = frames.map(frame => frame.flux).sort((a, b) => a - b);
-  const fluxLo = percentile(fluxes, .25), fluxHi = percentile(fluxes, .9), fluxRange = Math.max(.06, fluxHi - fluxLo);
-  const enriched = frames.map(frame => ({ ...frame, energy: clamp((frame.db - floor) / span), activity: clamp((frame.flux - fluxLo) / fluxRange) }));
-  const duration = frames.length * WINDOW_SEC, initial = [];
-  for (let second = 0; second < Math.ceil(duration); second += 1) {
-    const start = second * fps, energy = avg(enriched, start, start + fps, "energy"), activity = avg(enriched, start, start + fps, "activity");
-    initial.push({ energy, activity });
+function generateProfile(pcm) {
+  const startedAt = Date.now(), duration = pcm.length / RATE, count = Math.floor((pcm.length - N) / HOP) + 1;
+  const rows = new Array(count), real = new Float64Array(N), imag = new Float64Array(N), sums = [0, 0, 0];
+  const smooth = [0, 0, 0], slow = [0, 0, 0], previous = [0, 0, 0];
+  const frequencies = BANDS.map(([lo, hi]) => [Math.max(1, Math.floor(lo * N / RATE)), Math.min(N / 2 - 1, Math.ceil(hi * N / RATE))]);
+  const window = Float64Array.from({ length: N }, (_, index) => .5 - .5 * Math.cos(2 * Math.PI * index / (N - 1)));
+  for (let frame = 0; frame < count; frame += 1) { const offset = frame * HOP; let square = 0;
+    for (let index = 0; index < N; index += 1) { const value = pcm[offset + index]; square += value * value; real[index] = value * window[index]; imag[index] = 0; }
+    fft(real, imag);
+    for (let band = 0; band < 3; band += 1) { let power = 0; const [lo, hi] = frequencies[band];
+      for (let bin = lo; bin <= hi; bin += 1) power += real[bin] ** 2 + imag[bin] ** 2;
+      sums[band] = Math.log1p(power); smooth[band] = smooth[band] * .80 + sums[band] * .20; slow[band] = slow[band] * .983 + sums[band] * .017; }
+    const onset = sums.map((value, band) => clamp((value - previous[band] - .045) / .90, 0, 2));
+    const relative = sums.map((value, band) => clamp((value - slow[band] - .18) / 1.35, 0, 2));
+    for (let band = 0; band < 3; band += 1) previous[band] = smooth[band];
+    rows[frame] = { t: offset / RATE, rms: Math.sqrt(square / N), onset, relative };
   }
-  const envelope = enriched.map((frame, index) => .7 * clamp((frame.flux - fluxLo) / fluxRange) + .3 * clamp((frame.db - (enriched[index - 1]?.db ?? frame.db)) / 12));
-  const getDrive = center => {
-    const radius = Math.round(4.5 * fps), lo = Math.max(0, center - radius), hi = Math.min(envelope.length, center + radius), n = hi - lo;
-    if (n < 24) return 0; const mean = avg(envelope, lo, hi); let variance = 0;
-    for (let index = lo; index < hi; index += 1) variance += (envelope[index] - mean) ** 2;
-    variance /= n; if (variance < .0008 || mean < .025) return 0; let best = 0;
-    for (let lag = Math.ceil(.28 * fps); lag <= Math.min(Math.floor(1.15 * fps), Math.floor(n / 3)); lag += 1) {
-      let numerator = 0, left = 0, right = 0;
-      for (let index = lo + lag; index < hi; index += 1) { const x = envelope[index] - mean, y = envelope[index - lag] - mean; numerator += x * y; left += x * x; right += y * y; }
-      best = Math.max(best, numerator / Math.sqrt(left * right + 1e-12));
-    }
-    return clamp((best - .12) / .53) * clamp(Math.sqrt(variance) / .12);
-  };
-  const smoothEnergy = initial.map((_, i) => avg(initial.map(x => x.energy), i - 3, i + 4));
-  const smoothActivity = initial.map((_, i) => avg(initial, i - 3, i + 4, "activity"));
-  const drive = initial.map((_, i) => getDrive(Math.round((i + .5) * fps))).map((_, i, all) => avg(all, i - 2, i + 3));
-  const intensity = initial.map((_, i) => clamp(.83 * smoothEnergy[i] + .17 * smoothActivity[i]));
-  const developmentRaw = initial.map((_, i) => clamp((avg(intensity, i + 2, i + 7) - avg(intensity, Math.max(0, i - 6), Math.max(1, i - 2))) * 2, -1, 1));
-  const development = developmentRaw.map((_, i) => avg(developmentRaw, i - 2, i + 3));
-  let trend = "STABLE", pending = null, pendingCount = 0;
-  const steps = initial.map((step, i) => {
-    let candidate = "STABLE"; if (development[i] > .16 || (trend === "RISING" && development[i] > .07)) candidate = "RISING";
-    if (development[i] < -.16 || (trend === "FALLING" && development[i] < -.07)) candidate = "FALLING";
-    if (candidate === trend) { pending = null; pendingCount = 0; } else if (candidate !== pending) { pending = candidate; pendingCount = 1; }
-    else if (++pendingCount >= 3) { trend = candidate; pending = null; pendingCount = 0; }
-    const rounded = value => +value.toFixed(3);
-    return { time: i, energy: rounded(smoothEnergy[i]), fastEnergy: rounded(avg(initial.map(x => x.energy), i - 1, i + 2)),
-      fastActivity: rounded(avg(initial.map(x => x.activity), i - 1, i + 2)), activity: rounded(smoothActivity[i]),
-      intensity: rounded(intensity[i]), drive: rounded(drive[i]), development: rounded(development[i]), trend };
-  });
-  const pauses = [];
-  for (let i = Math.ceil(fps * 3); i < frames.length - Math.ceil(fps * .3); i += 1) {
-    const preceding = avg(enriched, i - 2 * fps, i - .25 * fps, "db");
-    if (preceding < floor + .4 * span || enriched[i].db > preceding - 10 || enriched[i - 1].db <= preceding - 10 || avg(enriched, i, i + 3, "db") > preceding - 12) continue;
-    let j = i; while (j < frames.length && j - i <= Math.ceil(1.3 * fps) && enriched[j].db < preceding - 10) j += 1;
-    const length = (j - i) * WINDOW_SEC; if (length < .17 || length > 1.25 || avg(enriched, j, j + .4 * fps, "db") < preceding - 8) continue;
-    const rise = clamp((avg(enriched, i - 4 * fps, i, "energy") - avg(enriched, i - 12 * fps, i - 6 * fps, "energy")) * 2);
-    const score = clamp(.45 * clamp((preceding - enriched[i].db - 12) / 18) + .35 * rise + .2 * clamp((preceding - floor) / span));
-    if (score >= .35) pauses.push({ time: +(i * WINDOW_SEC).toFixed(2), end: +(j * WINDOW_SEC).toFixed(2), score: +score.toFixed(2), leadInRise: +rise.toFixed(2) });
-    i = j;
-  }
-  pauses.sort((a, b) => b.score - a.score); const chosen = [];
-  for (const pause of pauses) if (!chosen.some(other => Math.abs(other.time - pause.time) < 8)) chosen.push(pause);
-  chosen.sort((a, b) => a.time - b.time);
-  return { version: 3, duration: +duration.toFixed(2), analysis: { frameSeconds: +WINDOW_SEC.toFixed(5), energyFloorDb: +floor.toFixed(2), energyCeilingDb: +ceiling.toFixed(2) }, steps, pauses: chosen };
+  const dbValues = rows.map(row => 20 * Math.log10(Math.max(row.rms, 1e-7))).sort((a, b) => a - b);
+  const percentile = q => dbValues[Math.floor((dbValues.length - 1) * q)], floorDb = percentile(.08), peakDb = percentile(.94), span = Math.max(4, peakDb - floorDb);
+  let fast = 0, phrase = 0, trend = 0;
+  const frames = rows.map(row => { const energy = clamp((20 * Math.log10(Math.max(row.rms, 1e-7)) - floorDb) / span);
+    fast += (energy - fast) * .24; phrase += (energy - phrase) * .009; trend += (phrase - trend) * .005;
+    return { t: row.t, energy, fast, phrase, development: clamp((phrase - trend) * 5, -1, 1), onset: row.onset, relative: row.relative }; });
+  const events = [], last = [-10, -10, -10];
+  for (let index = 2; index < frames.length - 2; index += 1) { const current = frames[index];
+    for (let band = 0; band < 3; band += 1) { const onset = current.onset[band], score = clamp(onset * .68 + current.relative[band] * .35, 0, 1.5);
+      if (score < .24 || onset < frames[index - 1].onset[band] || onset < frames[index + 1].onset[band] || current.t - last[band] < .14) continue;
+      const strength = clamp((score - .19) / .75); if (strength < .08) continue;
+      last[band] = current.t; events.push({ t: +current.t.toFixed(3), band, strength: +strength.toFixed(3) }); } }
+  const strong = [];
+  for (const event of events.filter(event => event.strength >= .53).sort((a, b) => a.t - b.t)) { const nearby = strong.at(-1);
+    if (nearby && event.t - nearby.t < .32) { if (event.strength > nearby.strength) Object.assign(nearby, event); continue; } strong.push({ ...event }); }
+  const lookup = time => frames[Math.max(0, Math.min(frames.length - 1, Math.round(time * RATE / HOP)))];
+  const breaks = [];
+  for (let time = 2; time < duration - 1; time += .1) { const before = (lookup(time - .95).fast + lookup(time - .55).fast) / 2;
+    const after = (lookup(time + .12).fast + lookup(time + .35).fast) / 2, drop = before - after;
+    if (before < .62 || drop < .43 || (breaks.length && time - breaks.at(-1).t < 3)) continue;
+    let lowest = after, at = time + .2; for (let delta = .2; delta < 1.6; delta += .1) if (lookup(time + delta).fast < lowest) { lowest = lookup(time + delta).fast; at = time + delta; }
+    const recovered = lookup(Math.min(duration - .1, at + 1.15)).fast;
+    breaks.push({ t: +time.toFixed(2), lowAt: +at.toFixed(2), drop: +drop.toFixed(2), reentry: recovered - lowest > .23 ? +(at + 1.15).toFixed(2) : null }); }
+  const entrances = [];
+  for (let time = 2; time < duration - 1; time += .1) { const quiet = (lookup(time - 1.15).fast + lookup(time - .65).fast) / 2;
+    const loud = (lookup(time + .1).fast + lookup(time + .3).fast) / 2, rise = loud - quiet;
+    if (quiet > .47 || loud < .69 || rise < .38 || (entrances.length && time - entrances.at(-1).t < 4)) continue;
+    entrances.push({ t: +time.toFixed(2), rise: +rise.toFixed(2) }); }
+  const edges = [];
+  for (let time = 1; time < duration - .7; time += .05) { const pre = (lookup(time - .38).fast + lookup(time - .19).fast) / 2, post = (lookup(time + .16).fast + lookup(time + .36).fast) / 2;
+    const change = post - pre, amplitude = Math.abs(change); if (amplitude < .30) continue;
+    const localBefore = (lookup(time - .75).fast + lookup(time - .55).fast + pre) / 3, localAfter = (post + lookup(time + .5).fast + lookup(time + .7).fast) / 3;
+    if (Math.abs(localAfter - localBefore) < .26) continue;
+    const kind = change < 0 ? "STOP" : "START", strength = clamp((amplitude - .23) / .57, .25, 1), prior = edges.at(-1);
+    if (prior && prior.kind === kind && time - prior.t < .9) { if (amplitude > prior.amplitude) Object.assign(prior, { t: +time.toFixed(2), strength: +strength.toFixed(3), amplitude }); continue; }
+    edges.push({ t: +time.toFixed(2), kind, strength: +strength.toFixed(3), amplitude }); }
+  edges.forEach(edge => delete edge.amplitude);
+  const phraseValues = frames.map(frame => frame.phrase).sort((a, b) => a - b), phraseAt = q => phraseValues[Math.floor((phraseValues.length - 1) * q)];
+  const phraseMedian = phraseAt(.5), phraseUpper = phraseAt(.85), rhythm = [], salient = events.filter(event => event.strength > .35).sort((a, b) => a.t - b.t); let left = 0, right = 0;
+  for (let time = 0; time < duration; time += .25) { while (left < salient.length && salient[left].t < time - 3.5) left += 1; while (right < salient.length && salient[right].t <= time) right += 1;
+    const unique = []; for (let index = left; index < right; index += 1) if (!unique.length || salient[index].t - unique.at(-1) > .115) unique.push(salient[index].t);
+    const intervals = []; for (let index = 1; index < unique.length; index += 1) { const gap = unique[index] - unique[index - 1]; if (gap > .15 && gap < 1.4) intervals.push(gap); }
+    const mean = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0;
+    const cv = mean ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - mean) ** 2, 0) / intervals.length) / mean : 2;
+    const regularity = clamp((.85 - cv) / .65) * clamp(intervals.length / 5), density = clamp((unique.length / 3.5 - 1.3) / 4.5), pace = mean ? clamp((.8 - mean) / .52) : 0;
+    rhythm.push([+clamp(.52 * regularity + .32 * density + .16 * pace * regularity).toFixed(3), +regularity.toFixed(3), +pace.toFixed(3)]); }
+  return { version: 4, duration: +duration.toFixed(2), hop: HOP / RATE,
+    timeline: frames.map(frame => [+frame.energy.toFixed(3), +frame.fast.toFixed(3), +frame.phrase.toFixed(3), +frame.development.toFixed(3)]),
+    rhythm, rhythmHop: .25, phraseMedian, phraseUpper, events, strong, breaks, entrances, edges,
+    info: { floorDb: +floorDb.toFixed(1), peakDb: +peakDb.toFixed(1), analysisMs: Date.now() - startedAt } };
 }
 
 try { parentPort.postMessage({ ok: true, profile: generateProfile(await decode(workerData.input)) }); }

@@ -40,141 +40,72 @@ the higher-priority lights-up behavior.
 Music mode is disabled when the `music` section is absent or uses
 `"enabled": false`. Enabling it affects automatic DMX fixtures only. Static
 colours, explicit lights-up, fixture pairing, master mode, global brightness,
-and external-master ownership keep their existing priority. Table lights do not
-receive audio data or music brightness commands.
+and fixture mappings keep their existing priority. Table lights do not receive
+audio or brightness data; in master mode they receive only shared hue targets
+and transition durations derived from the same musical intent.
 
-### Analysis lifecycle
+### Momentum algorithm
 
-When a new main-output tango starts, Lighting:
+Lighting directly ports the `tango-light-momentum-edges-prototype` analysis and
+render formulas. FFmpeg decodes mono 11,025 Hz audio in a worker. Overlapping
+1,024-sample FFT windows advance by 256 samples (about 23 ms), producing
+track-relative fast and phrase energy, development, three-band attacks, rolling
+3.5-second rhythmic momentum, exceptional hits, relative breaks, entrances and
+sudden START/STOP edges. Analysis never runs in the 40 FPS DMX loop.
 
-1. Keeps the currently visible lighting behavior running while analysis takes
-   place. It does not black out, reset hues, or restart the playback clock.
-2. Starts a Node worker which asks FFmpeg to decode the complete local recording
-   to mono floating-point PCM at 11,025 Hz.
-3. Analyses 1,024-sample windows, approximately 92.9 ms each. Decoding and FFT
-   work occur outside the configured 40 FPS DMX loop.
-4. Keeps the resulting profile in memory for that playback occurrence only.
-   There is no profile cache, queue pre-analysis, or disk output.
-5. Samples the profile at Tanda Forge's current actual media position and blends
-   the music response in over `activationBlendSeconds`, normally three seconds.
+Every automatic DMX fixture has its own hue, target and progress accumulator.
+The shared musical step rate advances those independent trajectories; completed
+steps choose new random full-wheel destinations. High character raises the
+minimum destination distance from 35° to 85°. Ordinary notes do not flash
+brightness. Phrase brightness uses the prototype's exact formula and attack /
+release smoothing at 97% saturation.
 
-A replay is a new occurrence and is analysed again. Superseded worker results
-are ignored. Missing FFmpeg, an inaccessible file, an unsupported codec, or a
-decode failure leaves legacy wandering active and reports the problem in the
-web page and terminal.
+Exceptional hits are accepted only above the track's phrase-energy upper
+percentile, with high fast energy, rhythmic momentum and the configured
+threshold. They have a four-second cooldown and send every automatic fixture
+to its own target at least 100° away using the configured eased kick time.
+START/STOP, entrance and break envelopes use the prototype's exact brightness
+offsets and colour-speed factors. Seeking suppresses crossed events; pausing
+freezes progress.
 
-The analyser derives expressive lighting inputs rather than identifying genre,
-mood, or a precise BPM:
+Manual/static colours, cortina/lights-up, master brightness, fixture channel
+mappings and pairing retain priority. Browser indicators consume the final RGB
+values produced by the same renderer as DMX.
 
-- **Energy** is normalized within each recording using robust loudness
-  percentiles, so quiet and loud recordings can both use the configured range.
-- **Fast energy** follows short sung and instrumental phrases more closely and
-  supplies most of the brightness response.
-- **Spectral activity** measures positive changes across frequency bands.
-- **Rhythmic drive** is an autocorrelation-based periodic-accent proxy, not a
-  BPM estimate.
-- **Development** describes sustained rising, falling, or stable intensity.
-- **Pause candidates** identify short, confident drops followed by a clear
-  musical return. Only scores at or above the configured threshold receive an
-  accent.
-
-The web page reports the current analysis/transport state, track basename,
-analysis duration, source position, intensity, fast energy/activity, rhythmic
-drive, development, output brightness, hue rate, and any active pause accent.
-
-### Effect on colour and transitions
-
-Music does not select fixed warm, cool, or genre-based palettes. In individual
-mode, every automatic fixture or pair leader continues choosing an independent
-random destination over the complete 0–360° hue wheel. Music-aware destinations
-are kept at least approximately 48° away so a new transition is visibly
-meaningful. Hues travel by the shortest circular route with smoothstep easing.
-
-The music changes how quickly each fixture progresses towards its existing
-destination; it does not choose a new target on every DMX frame. Rhythmic drive,
-fast activity, sustained intensity, and short phrase lift are combined and
-nonlinearly mapped to approximately 1.7–38° per second before applying the
-Transition speed percentage. Acceleration into energetic material is faster
-than deceleration back into calm passages, which avoids nervous speed changes.
-
-In master mode, fixtures retain their shared target and timing. Paired fixtures
-continue following their pair leader. If an external ESP master owns the
-master/wander decision, music does not retime its hue transitions.
-
-At 0% Music influence, legacy target selection, colour, brightness, saturation,
-and transition timing are retained. Disabling music or stopping playback blends
-back to legacy automatic operation rather than fading the room to black.
-
-### Effect on brightness and saturation
-
-The principal brightness input is:
-
-```text
-expressiveEnergy = 0.72 × fastEnergy + 0.28 × intensity
-value = minimum + (maximum - minimum) × expressiveEnergy ^ gamma
-```
-
-The default range is 25–100% with gamma 1.05. Brightness rises with a 0.42 s
-time constant and falls with a slower 0.70 s time constant. This produces
-visible musical phrasing without turning every short accent into a flash.
-
-Saturation normally remains around 92–99%. Brightness is adjusted as HSV value,
-not by mixing towards white, so bright fixtures remain strongly coloured.
-RGB-only fixtures scale their red, green, and blue channels together. Fixtures
-with a dedicated dimmer retain saturated RGB and apply the musical value once
-through the dimmer channel. The existing `masterBrightness` is applied after
-the music value. Static/manual fixtures are not given a music brightness floor,
-and explicit zero/blackout remains zero.
-
-The fixture indicators on the web page show both the production hue and its
-current musical brightness. They are a status display, not a separate lighting
-simulation.
-
-### Dramatic pauses
-
-Confident pause events can temporarily coordinate the otherwise independent
-DMX colours. The default V10-derived envelope begins eight seconds before the
-pause with a slight dim, builds over the final six seconds, holds through the
-pause and for 2.5 seconds after the return, then releases over 4.5 seconds.
-Brightness remains within the configured minimum and maximum after the effect
-is applied. Manual/static colours, lights-up, and other higher-priority controls
-continue to win.
-
-This first draft deliberately retains the V10-derived pause treatment. Stronger
-pause or peak-moment effects are deferred until the baseline has been evaluated
-on physical fixtures.
+Whenever master mode is active, every automatic DMX fixture uses one shared
+trajectory and the table lights receive that same target hue and remaining
+transition duration. This begins immediately even if music analysis is still
+pending or music response is disabled. Commands are deduplicated and
+rate-limited. Music pause sends a hold;
+master exit, stop, cortina or disconnection returns the bridge to autonomous
+wandering. Table-light brightness is unchanged.
 
 ### Music controls
 
-The web page persists these controls into the active configuration file:
+The web page exposes the prototype controls with its original defaults:
 
-- **Enabled** turns music-derived DMX intent on or off.
-- **Influence** blends between exact legacy behavior at 0% and the complete
-  music mapping at 100%.
-- **Transition speed** scales the requested hue movement rate; the default is
-  220%.
-- **Minimum/maximum brightness** bound the musical HSV value; defaults are
-  25% and 100%.
-- **Gamma** shapes the energy-to-brightness curve; the default is 1.05.
-- **AV delay** shifts profile sampling. A positive value makes the visible
-  response happen later; the default is 0 ms.
-- **Dramatic pause accents** enables or suppresses the prepared pause envelope.
-- **Reset defaults** restores the production control defaults.
+- minimum/maximum brightness: 25% / 100%; gamma: 1.05;
+- rhythmic momentum influence: 100%; above-average energy influence: 75%;
+- movement relaxation: 2500 ms; colour step speed: 220%;
+- exceptional kick threshold: 90%; exceptional kick colour time: 650 ms;
+- structure effects enabled; AV delay 0 ms.
 
 The corresponding configuration is:
 
 ```json
 "music": {
   "enabled": false,
-  "influencePercent": 100,
-  "transitionSpeedPercent": 220,
   "minimumBrightnessPercent": 25,
   "maximumBrightnessPercent": 100,
   "gamma": 1.05,
-  "avDelayMs": 0,
-  "activationBlendSeconds": 3,
-  "dramaticPausesEnabled": true,
-  "dramaticPauseMinimumScore": 0.58
+  "rhythmicMomentumInfluencePercent": 100,
+  "aboveAverageEnergyInfluencePercent": 75,
+  "movementRelaxationMs": 2500,
+  "colourStepSpeedPercent": 220,
+  "exceptionalKickThresholdPercent": 90,
+  "exceptionalKickColourTimeMs": 650,
+  "structureEffectsEnabled": true,
+  "avDelayMs": 0
 }
 ```
 
@@ -366,7 +297,7 @@ other DMX program before starting Lighting.
 ## ESP table-lights bridge
 
 The ESP table-lights bridge sketch is included at
-`table-lights/DMX-bridge/tango_light_3_DMX_bridge.ino`. It connects over USB serial and can rebroadcast lighting state to
+`table-lights/DMX-bridge/tango_light_3_DMX_bridge/tango_light_3_DMX_bridge.ino`. It connects over USB serial and can rebroadcast lighting state to
 ESP-NOW-connected table lights.
 
 Lighting scans for the configured USB vendor ID (normally `1a86`) and opens the
@@ -468,6 +399,10 @@ enabling animation.
 
 - Confirm `externalMaster.enabled` is `true`.
 - Check that the bridge's USB vendor ID matches `externalMaster.vendorId`.
+- If the operating system omits USB identifiers, Lighting automatically uses a
+  single unambiguous USB serial device. If several unidentified USB serial
+  devices exist, `externalMaster.path` may be configured explicitly for that
+  installation; no machine-specific device path is included by default.
 - Confirm its firmware uses the configured baud rate and newline termination.
 - Wait at least `scanSeconds` after connecting it; Lighting rescans while running.
 - Check that no serial monitor has already opened the bridge port.
@@ -554,8 +489,11 @@ a bridge reconnect while the app runs, but is not saved across app restarts.
 An orderly app shutdown releases paired tables back to automatic mode. This uses
 the existing colour-control bridge firmware; no further upload is needed.
 
-USB commands are newline-delimited: `STATIC <hue>` (0–359.999), `WANDER`,
-`BRIDGE?`, and the existing `1`/`0` lights-up/down commands. The bridge responds
+USB commands are newline-delimited: `STATIC <hue>` (0–359.999),
+`MASTER <target-hue> <duration-ms>`, `WANDER`, `BRIDGE?`, and the existing
+`1`/`0` lights-up/down commands. `MASTER` retains the original ESP-NOW payload
+and lets Lighting supply a smooth music trajectory; `WANDER` releases that
+override and restores autonomous sync-mode timing. The bridge responds
 with `TABLE: {"static":true,"hue":120}` status reports. Existing `UDP:` reports
 continue to describe the automatic sequence. Old bridge firmware remains usable
 for automatic lighting but does not expose the new panel. A bridge reboot clears

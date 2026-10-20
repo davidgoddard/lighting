@@ -1,108 +1,146 @@
 const clamp = (value, min = 0, max = 1) => Math.min(max, Math.max(min, value));
-const smoothstep = value => {
-  const x = clamp(value);
-  return x * x * (3 - 2 * x);
+const approach = (current, target, dt, attack, release) => {
+  const tau = target > current ? attack : release;
+  return current + (target - current) * (1 - Math.exp(-dt / Math.max(.02, tau)));
 };
-const mix = (from, to, amount) => from + (to - from) * amount;
 
 export const DEFAULT_MUSIC_CONFIG = Object.freeze({
   enabled: false,
-  influencePercent: 100,
-  transitionSpeedPercent: 220,
   minimumBrightnessPercent: 25,
   maximumBrightnessPercent: 100,
   gamma: 1.05,
-  avDelayMs: 0,
-  activationBlendSeconds: 3,
-  dramaticPausesEnabled: true,
-  dramaticPauseMinimumScore: 0.58
+  rhythmicMomentumInfluencePercent: 100,
+  aboveAverageEnergyInfluencePercent: 75,
+  movementRelaxationMs: 2500,
+  colourStepSpeedPercent: 220,
+  exceptionalKickThresholdPercent: 90,
+  exceptionalKickColourTimeMs: 650,
+  structureEffectsEnabled: true,
+  avDelayMs: 0
 });
 
 export function validateMusicConfig(source = {}) {
   const config = { ...DEFAULT_MUSIC_CONFIG, ...source };
-  if (typeof config.enabled !== "boolean") throw new Error("music.enabled must be true or false");
-  if (typeof config.dramaticPausesEnabled !== "boolean") throw new Error("music.dramaticPausesEnabled must be true or false");
   const ranges = {
-    influencePercent: [0, 100], transitionSpeedPercent: [50, 300],
-    minimumBrightnessPercent: [0, 100], maximumBrightnessPercent: [0, 100],
-    gamma: [0.4, 2], avDelayMs: [-500, 1000], activationBlendSeconds: [2, 5],
-    dramaticPauseMinimumScore: [0, 1]
+    minimumBrightnessPercent: [0, 65], maximumBrightnessPercent: [50, 100], gamma: [.4, 2],
+    rhythmicMomentumInfluencePercent: [0, 200], aboveAverageEnergyInfluencePercent: [0, 100],
+    movementRelaxationMs: [400, 5000], colourStepSpeedPercent: [25, 400],
+    exceptionalKickThresholdPercent: [20, 100], exceptionalKickColourTimeMs: [250, 1400], avDelayMs: [-500, 1000]
   };
+  if (typeof config.enabled !== "boolean" || typeof config.structureEffectsEnabled !== "boolean") {
+    throw new Error("music toggles must be true or false");
+  }
   for (const [name, [min, max]] of Object.entries(ranges)) {
     config[name] = Number(config[name]);
-    if (!Number.isFinite(config[name]) || config[name] < min || config[name] > max) {
-      throw new Error(`music.${name} must be from ${min} to ${max}`);
-    }
+    if (!Number.isFinite(config[name]) || config[name] < min || config[name] > max) throw new Error(`music.${name} must be from ${min} to ${max}`);
   }
-  if (config.maximumBrightnessPercent < config.minimumBrightnessPercent) {
-    throw new Error("music.maximumBrightnessPercent cannot be less than minimumBrightnessPercent");
-  }
+  if (config.maximumBrightnessPercent < config.minimumBrightnessPercent) throw new Error("music.maximumBrightnessPercent cannot be less than minimumBrightnessPercent");
   return config;
 }
 
-export function sampleProfile(profile, positionSeconds) {
-  if (!profile?.steps?.length) return null;
-  const position = clamp(positionSeconds, 0, Math.max(0, profile.duration));
-  const index = Math.min(profile.steps.length - 1, Math.floor(position));
-  const next = Math.min(profile.steps.length - 1, index + 1);
-  const fraction = position - Math.floor(position);
-  const a = profile.steps[index], b = profile.steps[next];
-  const numeric = name => mix(Number(a[name] ?? 0), Number(b[name] ?? a[name] ?? 0), fraction);
-  return { time: position, energy: numeric("energy"), fastEnergy: numeric("fastEnergy"),
-    fastActivity: numeric("fastActivity"), activity: numeric("activity"), intensity: numeric("intensity"),
-    drive: numeric("drive"), development: numeric("development"), trend: fraction < .5 ? a.trend : b.trend };
+export function sampleProfile(profile, time) {
+  if (!profile?.timeline?.length) return null;
+  const index = Math.max(0, Math.min(profile.timeline.length - 1, Math.floor(clamp(time, 0, profile.duration) / profile.hop)));
+  const value = profile.timeline[index];
+  return { time, energy: value[0], fastEnergy: value[1], phrase: value[2], development: value[3] };
 }
 
-export function pauseEnvelope(profile, position, config) {
-  if (!config.dramaticPausesEnabled) return null;
-  let chosen = null;
-  for (let index = 0; index < (profile?.pauses ?? []).length; index += 1) {
-    const pause = profile.pauses[index];
-    if (pause.score < config.dramaticPauseMinimumScore || position < pause.time - 8 || position > pause.end + 7) continue;
-    let shape, brightness, phase;
-    if (position < pause.time - 6) {
-      const q = smoothstep((position - (pause.time - 8)) / 2); shape = .12 * q; brightness = 1 - .28 * q; phase = "preparing";
-    } else if (position < pause.time) {
-      const q = smoothstep((position - (pause.time - 6)) / 6); shape = mix(.12, 1, q); brightness = mix(.72, 1.27, q); phase = "building";
-    } else if (position < pause.end + 2.5) {
-      shape = 1; brightness = 1.27; phase = "holding";
-    } else {
-      const q = smoothstep((position - (pause.end + 2.5)) / 4.5); shape = 1 - q; brightness = mix(1.27, 1, q); phase = "returning";
-    }
-    const candidate = { shape, brightness, phase, hue: [44, 315, 190][index % 3], score: pause.score };
-    if (!chosen || candidate.shape > chosen.shape) chosen = candidate;
+function rhythmSample(profile, time) {
+  if (!profile?.rhythm?.length) return { momentum: 0, regularity: 0, pace: 0 };
+  const value = profile.rhythm[Math.max(0, Math.min(profile.rhythm.length - 1, Math.floor(time / profile.rhythmHop)))];
+  return { momentum: value[0], regularity: value[1], pace: value[2] };
+}
+
+function structural(profile, time, enabled) {
+  if (!enabled) return { brightnessOffset: 0, speedFactor: 1, mode: "NORMAL", edgeStrength: 0 };
+  let brightnessOffset = 0, speedFactor = 1, mode = "NORMAL", edgeStrength = 0;
+  for (const edge of profile.edges ?? []) {
+    const delta = time - edge.t, amplitude = clamp(edge.strength, .25, 1);
+    if (delta < -.75 || delta > 1.7) continue;
+    mode = edge.kind; edgeStrength = Math.max(edgeStrength, amplitude);
+    if (edge.kind === "STOP") {
+      if (delta < 0) { brightnessOffset -= .10 * amplitude * clamp((delta + .75) / .75); speedFactor = .65; }
+      else if (delta < .13) { brightnessOffset -= .48 * amplitude; speedFactor = .08; }
+      else { brightnessOffset -= .48 * amplitude * Math.exp(-(delta - .13) / .75); speedFactor = .35; }
+    } else if (delta < 0) { brightnessOffset -= .16 * amplitude * clamp((delta + .75) / .75); speedFactor = .6; }
+    else if (delta < .12) { brightnessOffset += .42 * amplitude; speedFactor = 3; }
+    else { brightnessOffset += .42 * amplitude * Math.exp(-(delta - .12) / .7); speedFactor = 2.2; }
   }
-  return chosen;
+  if (mode !== "NORMAL") return { brightnessOffset, speedFactor, mode, edgeStrength };
+  const events = [
+    ...(profile.breaks ?? []).map(event => ({ ...event, kind: "BREAK", strength: event.drop })),
+    ...(profile.entrances ?? []).map(event => ({ ...event, kind: "ENTRANCE", strength: event.rise }))
+  ];
+  for (const event of events) {
+    const delta = time - event.t; if (delta < -2 || delta > 2.4) continue; mode = event.kind;
+    if (event.kind === "ENTRANCE") {
+      const power = clamp(event.strength);
+      if (delta < 0) { brightnessOffset -= power * .28 * clamp((delta + 1.2) / 1.2); speedFactor = .3; }
+      else if (delta < .4) { brightnessOffset += power * .35 * (1 - delta / .4); speedFactor = 2.2; }
+      continue;
+    }
+    const amount = clamp(event.strength / .6, .3, 1);
+    if (delta < -.8) brightnessOffset -= amount * .22 * clamp((delta + 2) / 1.2);
+    else if (delta < -.12) brightnessOffset += amount * (-.22 + .65 * ((delta + .8) / .68));
+    else if (delta < .18) brightnessOffset += amount * (.43 - .83 * clamp((delta + .12) / .30));
+    else if (delta < 1) brightnessOffset -= amount * .40 * (1 - (delta - .18) / .82);
+    speedFactor = delta > -.2 && delta < .6 ? .22 : 1;
+  }
+  return { brightnessOffset, speedFactor, mode, edgeStrength };
 }
 
 export function createMusicIntentState() {
-  return { hueRate: 0, brightness: null, saturation: 1, lastAt: null };
+  return { brightness: .45, stepRate: 1 / 35, lastAt: null, lastPosition: null, lastKickPosition: -10 };
+}
+
+function crossed(previous, current, eventTime) {
+  return previous !== null && current >= previous && eventTime > previous && eventTime <= current;
 }
 
 export function computeMusicIntent(profile, position, config, previous, nowSeconds, activation = 1) {
-  const feature = sampleProfile(profile, position);
-  if (!feature) return null;
-  const dt = previous.lastAt === null ? 0 : clamp(nowSeconds - previous.lastAt, 0, .1);
-  const influence = clamp(config.influencePercent / 100) * clamp(activation);
-  const driveWeight = smoothstep((feature.drive - .28) / .46);
-  const busyWeight = smoothstep((feature.fastActivity - .23) / .34);
-  const powerWeight = smoothstep((feature.intensity - .36) / .44);
-  const liftWeight = smoothstep(Math.max(0, feature.fastEnergy - feature.intensity) / .20);
-  const urgency = clamp(.32 * driveWeight + .32 * busyWeight + .26 * powerWeight + .10 * liftWeight);
-  const baseRate = 1.7 + 36.3 * smoothstep((urgency - .10) / .70);
-  const requestedRate = baseRate * config.transitionSpeedPercent / 100;
-  const targetRate = mix(1.7, requestedRate, influence);
-  const rateTau = targetRate > previous.hueRate ? .55 : 2.7;
-  const hueRate = previous.lastAt === null ? targetRate : previous.hueRate + (targetRate - previous.hueRate) * (1 - Math.exp(-dt / rateTau));
-  const expressiveEnergy = clamp(.72 * feature.fastEnergy + .28 * feature.intensity);
-  const min = config.minimumBrightnessPercent / 100, max = config.maximumBrightnessPercent / 100;
-  const mapped = min + (max - min) * expressiveEnergy ** config.gamma;
-  const targetBrightness = mix(1, mapped, influence);
-  const brightnessTau = targetBrightness > (previous.brightness ?? targetBrightness) ? .42 : .70;
-  let brightness = previous.brightness === null ? targetBrightness : previous.brightness + (targetBrightness - previous.brightness) * (1 - Math.exp(-dt / brightnessTau));
-  const saturationTarget = mix(1, .92 + .07 * feature.intensity, influence);
-  const saturation = previous.saturation + (saturationTarget - previous.saturation) * (1 - Math.exp(-dt / 2));
-  const accent = pauseEnvelope(profile, position, config);
-  brightness = clamp(brightness * (1 + ((accent?.brightness ?? 1) - 1) * influence), min, max);
-  return { feature, hueRate, brightness, saturation, accent, influence, lastAt: nowSeconds };
+  const feature = sampleProfile(profile, position); if (!feature) return null;
+  const dt = previous.lastAt === null ? 0 : clamp(nowSeconds - previous.lastAt, 0, .08);
+  const jumped = previous.lastPosition !== null && (position < previous.lastPosition - .15 || Math.abs(position - previous.lastPosition) > 1.2);
+  const rhythm = rhythmSample(profile, position), median = profile.phraseMedian ?? .42, upper = profile.phraseUpper ?? .7;
+  const aboveAverage = clamp((feature.phrase - median) / Math.max(.12, upper - median));
+  const sustainedRise = clamp(feature.development * 2.2), falling = clamp(-feature.development * 2);
+  const character = clamp(.45 * aboveAverage * config.aboveAverageEnergyInfluencePercent / 100 +
+    .27 * rhythm.momentum * config.rhythmicMomentumInfluencePercent / 100 + .28 * sustainedRise - .22 * falling);
+  const structure = structural(profile, position, config.structureEffectsEnabled);
+  const demandedStepRate = (1 / 38 + clamp(character) ** 1.65 * .88) * (config.colourStepSpeedPercent / 220) * structure.speedFactor;
+  const stepRate = previous.lastAt === null ? 1 / 35 : approach(previous.stepRate, demandedStepRate, dt, .55, config.movementRelaxationMs / 1000);
+  const min = config.minimumBrightnessPercent / 100, max = Math.max(min, config.maximumBrightnessPercent / 100);
+  const baseRaw = clamp(.27 + .48 * feature.phrase + .18 * aboveAverage + .12 * sustainedRise - .09 * falling);
+  const baseBrightness = min + (max - min) * baseRaw ** config.gamma;
+  const structuralTarget = clamp(baseBrightness + (max - min) * structure.brightnessOffset, min, max);
+  const brightness = previous.lastAt === null ? .45 : approach(previous.brightness, structuralTarget, dt,
+    structure.mode === "START" ? .065 : .8, structure.mode === "STOP" ? .085 : 1.9);
+  let kickEvent = null;
+  if (!jumped) {
+    for (const edge of profile.edges ?? []) if (edge.kind === "START" && edge.strength > .55 && crossed(previous.lastPosition, position, edge.t)) kickEvent = edge;
+    for (const event of profile.strong ?? []) if (crossed(previous.lastPosition, position, event.t)) {
+      const atEvent = sampleProfile(profile, event.t), eventRhythm = rhythmSample(profile, event.t);
+      if (event.strength >= config.exceptionalKickThresholdPercent / 100 && atEvent.phrase > upper && atEvent.fastEnergy > .78 && eventRhythm.momentum > .35) kickEvent = event;
+    }
+  }
+  const cooldownReady = position - previous.lastKickPosition >= 4;
+  const triggered = Boolean(kickEvent && (kickEvent.kind === "START" || cooldownReady));
+  const strength = triggered ? kickEvent.strength : 0;
+  const kickDurationSeconds = config.exceptionalKickColourTimeMs / 1000 * (1.1 - .25 * strength);
+  const influence = clamp(activation);
+  return { feature: { ...feature, rhythm }, character, aboveAverage, sustainedRise, falling, structure,
+    stepRate: Math.max(.001, stepRate), targetTransitionSeconds: 1 / Math.max(.001, demandedStepRate),
+    effectiveTransitionSeconds: 1 / Math.max(.001, stepRate), baseBrightness,
+    brightness: clamp(1 + (brightness - 1) * influence, min, 1), saturation: .97, influence,
+    kick: { triggered, active: triggered, strength, transitionSeconds: kickDurationSeconds, retargeted: false },
+    lastAt: nowSeconds, lastPosition: position, lastKickPosition: triggered ? position : jumped ? position - 5 : previous.lastKickPosition };
+}
+
+export function formatMusicDiagnostic(positionSeconds, feature, intent = null) {
+  const minutes = Math.floor(positionSeconds / 60), seconds = String(Math.floor(positionSeconds % 60)).padStart(2, "0");
+  if (!intent) return `Music ${minutes}:${seconds} energy=${feature.fastEnergy.toFixed(3)} phrase=${feature.phrase.toFixed(3)} development=${feature.development.toFixed(3)}`;
+  return `Music ${minutes}:${seconds} energy=${feature.fastEnergy.toFixed(3)} phrase=${feature.phrase.toFixed(3)} ` +
+    `development=${feature.development.toFixed(3)} momentum=${feature.rhythm.momentum.toFixed(3)} ` +
+    `character=${intent.character.toFixed(3)} steps=${intent.stepRate.toFixed(3)}/s brightness=${intent.brightness.toFixed(3)} ` +
+    `structure=${intent.structure.mode} kick=${intent.kick.triggered ? intent.kick.strength.toFixed(3) : "none"}`;
 }
