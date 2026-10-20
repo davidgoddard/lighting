@@ -5,7 +5,7 @@
     "max": 40
   },
   "masterMode": {
-    "enabled": false,
+    "enabled": true,
     "transitionCount": {
       "min": 2,
       "max": 6
@@ -32,15 +32,18 @@
   },
   "music": {
     "enabled": true,
-    "influencePercent": 100,
-    "transitionSpeedPercent": 300,
-    "minimumBrightnessPercent": 1,
+    "minimumBrightnessPercent": 25,
     "maximumBrightnessPercent": 100,
     "gamma": 1.05,
+    "rhythmicMomentumInfluencePercent": 100,
+    "aboveAverageEnergyInfluencePercent": 75,
+    "movementRelaxationMs": 2500,
+    "colourStepSpeedPercent": 220,
+    "exceptionalKickThresholdPercent": 90,
+    "exceptionalKickColourTimeMs": 800,
+    "structureEffectsEnabled": true,
     "avDelayMs": 0,
-    "activationBlendSeconds": 3,
-    "dramaticPausesEnabled": true,
-    "dramaticPauseMinimumScore": 0.58
+    "activationBlendSeconds": 3
   },
   "webPort": 8080,
   "usb": {
@@ -196,8 +199,8 @@
       "address": 101,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 255,
-        "green": 255,
+        "red": 46,
+        "green": 81,
         "blue": 255
       }
     },
@@ -218,9 +221,9 @@
       "address": 121,
       "type": "8ch-dimmer-rgbw",
       "lightsUpColour": {
-        "red": 227,
-        "green": 251,
-        "blue": 142
+        "red": 46,
+        "green": 81,
+        "blue": 255
       }
     }
   ]

@@ -45,10 +45,8 @@ export class PlaybackCoordinator {
       if (generation !== this.generation || this.snapshot.sessionId !== event.sessionId) return;
       this.snapshot.profile = Object.freeze(profile); this.snapshot.status = this.snapshot.event.state === "paused" ? "PAUSED" : "READY";
       this.snapshot.readyAt = this.now(); this.snapshot.analysisMs = this.now() - started;
-      const average = name => profile.steps.length
-        ? profile.steps.reduce((sum, step) => sum + Number(step[name] ?? 0), 0) / profile.steps.length : 0;
       console.log(`Music analysis ready: analysisMs=${Math.round(this.snapshot.analysisMs)} duration=${profile.duration}s ` +
-        `intensity=${average("intensity").toFixed(3)} drive=${average("drive").toFixed(3)} pauses=${profile.pauses?.length ?? 0}`);
+        `events=${profile.events?.length ?? 0} strong=${profile.strong?.length ?? 0} edges=${profile.edges?.length ?? 0}`);
     } catch (error) {
       if (generation !== this.generation) return;
       this.snapshot.status = "UNAVAILABLE"; this.snapshot.error = error instanceof Error ? error.message : String(error);

@@ -7,7 +7,7 @@ import { SerialPort } from "serialport";
 import usb from "usb";
 import { createAudioAnalyser } from "./audio-analysis.js";
 import { PlaybackCoordinator } from "./playback-integration.js";
-import { computeMusicIntent, createMusicIntentState } from "./music-intent.js";
+import { computeMusicIntent, createMusicIntentState, formatMusicDiagnostic, sampleProfile, validateMusicConfig } from "./music-intent.js";
 
 const argumentsList = process.argv.slice(2);
 const diagnosticMode = argumentsList.includes("--diagnose");
@@ -32,21 +32,6 @@ function integer(value, name, min, max) {
 function parseUsbId(value, name) {
   const parsed = typeof value === "string" ? Number.parseInt(value, 0) : value;
   return integer(parsed, name, 0, 0xffff);
-}
-
-function validateMusicConfig(source = {}) {
-  const config = { enabled: false, influencePercent: 100, transitionSpeedPercent: 220,
-    minimumBrightnessPercent: 25, maximumBrightnessPercent: 100, gamma: 1.05, avDelayMs: 0,
-    activationBlendSeconds: 3, dramaticPausesEnabled: true, dramaticPauseMinimumScore: .58, ...source };
-  if (typeof config.enabled !== "boolean" || typeof config.dramaticPausesEnabled !== "boolean") fail("music toggles must be true or false");
-  const ranges = { influencePercent: [0, 100], transitionSpeedPercent: [50, 300], minimumBrightnessPercent: [0, 100],
-    maximumBrightnessPercent: [0, 100], gamma: [.4, 2], avDelayMs: [-500, 1000], activationBlendSeconds: [2, 5], dramaticPauseMinimumScore: [0, 1] };
-  for (const [name, [min, max]] of Object.entries(ranges)) {
-    config[name] = Number(config[name]);
-    if (!Number.isFinite(config[name]) || config[name] < min || config[name] > max) fail(`music.${name} must be from ${min} to ${max}`);
-  }
-  if (config.maximumBrightnessPercent < config.minimumBrightnessPercent) fail("music.maximumBrightnessPercent cannot be less than minimumBrightnessPercent");
-  return config;
 }
 
 function validateConfig(config) {
@@ -117,6 +102,9 @@ function validateConfig(config) {
     config.externalMaster.vendorId ?? "0x1a86",
     "externalMaster.vendorId"
   );
+  if (config.externalMaster.path !== undefined && typeof config.externalMaster.path !== "string") {
+    fail("externalMaster.path must be a string");
+  }
   config.externalMaster.baudRate = integer(
     config.externalMaster.baudRate ?? 115200,
     "externalMaster.baudRate",
@@ -270,13 +258,14 @@ function transitionTo(fromHue, toHue, durationSeconds, now) {
 function newIndividualTransition(config, fromHue, now) {
   return transitionTo(
     fromHue,
-    randomTargetHue(fromHue, config.music?.enabled && config.music.influencePercent > 0 ? 48 : 20),
+    randomTargetHue(fromHue, config.music?.enabled ? 45 : 20),
     randomBetween(config.transitionSeconds.min, config.transitionSeconds.max),
     now
   );
 }
 
 function transitionProgress(transition, now) {
+  if (transition.musicDriven) return Math.min(1, Math.max(0, transition.progress ?? 0));
   return Math.min(1, Math.max(0, (now - transition.startedAt) / transition.durationMs));
 }
 
@@ -284,6 +273,8 @@ function transitionHue(transition, now) {
   const rawProgress = transitionProgress(transition, now);
   const progress = transition.easing === "smoothstep"
     ? rawProgress * rawProgress * (3 - 2 * rawProgress)
+    : transition.easing === "easeOutQuad" ? 1 - (1 - rawProgress) ** 2
+    : transition.easing === "easeOut" ? 1 - (1 - rawProgress) ** 3
     : rawProgress;
   return transition.fromHue + (transition.toHue - transition.fromHue) * progress;
 }
@@ -294,7 +285,8 @@ function announceTransition(mode, state, now) {
     automaticMode: mode.name,
     hue: ((transitionHue(state.transition, now) % 360) + 360) % 360,
     targetHue: ((state.transition.toHue % 360) + 360) % 360,
-    durationMs: Math.max(0, (1 - transitionProgress(state.transition, now)) * state.transition.durationMs)
+    durationMs: Math.max(0, (1 - transitionProgress(state.transition, now)) * state.transition.durationMs),
+    easing: state.transition.easing ?? "linear"
   });
 }
 
@@ -420,6 +412,7 @@ function updateMode(config, states, mode, now) {
       if (isPairFollower(state)) continue;
       if (state.staticHue !== null) continue;
       if (transitionProgress(state.transition, now) >= 1) {
+        if (state.transition.musicDriven) continue;
         state.transition = newIndividualTransition(config, state.transition.toHue, now);
         announceTransition(mode, state, now);
       }
@@ -470,43 +463,71 @@ function updateMode(config, states, mode, now) {
   );
 }
 
-function applyMusicRate(states, mode, now, degreesPerSecond) {
-  if (!Number.isFinite(degreesPerSecond) || degreesPerSecond <= 0) return;
+function musicTransition(fromHue, toHue, durationSeconds, now) {
+  return { ...transitionTo(fromHue, toHue, durationSeconds, now), progress: 0,
+    lastUpdate: now, easing: "linear", musicDriven: true };
+}
+
+function advanceMusicTransition(transition, now, durationSeconds) {
+  const elapsedSeconds = Math.max(0, Math.min(.25, (now - transition.lastUpdate) / 1000));
+  transition.progress = Math.min(1, transition.progress + elapsedSeconds / durationSeconds);
+  transition.lastUpdate = now;
+  transition.durationMs = durationSeconds * 1000;
+  transition.startedAt = now - transition.progress * transition.durationMs;
+}
+
+function applyMusicMotion(config, states, mode, now, intent, pickTarget = randomTargetHue) {
+  const durationSeconds = intent.effectiveTransitionSeconds;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
   const leaders = states.filter(state => !isPairFollower(state) && state.staticHue === null);
   if (mode.name === "master" && leaders.length) {
-    const target = mode.masterTransition.toHue;
-    const firstApplication = leaders.some(state => !state.transition.musicDriven);
-    if (firstApplication) {
-      const snapshots = leaders.map(state => ({ state, hue: transitionHue(state.transition, now) }));
-      const maximumDistance = Math.max(...snapshots.map(({ hue }) => circularHueDistance(hue, target)), 1);
-      const duration = Math.max(.1, maximumDistance / degreesPerSecond);
-      for (const { state, hue } of snapshots) state.transition = {
-        ...transitionTo(hue, target, duration, now), easing: "smoothstep", musicDriven: true
-      };
-      mode.masterTransition = { ...leaders[0].transition };
+    const representative = leaders[0];
+    if (!mode.masterTransition.musicDriven) {
+      const current = transitionHue(representative.transition, now);
+      mode.masterTransition = musicTransition(current, pickTarget(current, 45), durationSeconds, now);
+      for (const state of leaders) { state.transition = { ...mode.masterTransition }; announceTransition(mode, state, now); }
       return;
     }
-    const progress = transitionProgress(mode.masterTransition, now);
-    const maximumDistance = Math.max(...leaders.map(state => Math.abs(state.transition.toHue - state.transition.fromHue)), 1);
-    const durationMs = Math.max(100, maximumDistance / degreesPerSecond * 1000);
-    const startedAt = now - progress * durationMs;
-    mode.masterTransition = { ...mode.masterTransition, durationMs, startedAt, easing: "smoothstep", musicDriven: true };
-    for (const state of leaders) state.transition = { ...state.transition, durationMs, startedAt, easing: "smoothstep", musicDriven: true };
+    if (intent.kick.triggered) {
+      const current = transitionHue(mode.masterTransition, now);
+      mode.masterTransition = { ...musicTransition(current, pickTarget(current, 100), intent.kick.transitionSeconds, now),
+        easing: "easeOutQuad", kickTransition: true };
+      intent.kick.retargeted = true;
+      for (const state of leaders) { state.transition = { ...mode.masterTransition }; announceTransition(mode, state, now); }
+      return;
+    }
+    if (transitionProgress(mode.masterTransition, now) >= 1) {
+      const current = transitionHue(mode.masterTransition, now);
+      mode.masterTransition = musicTransition(current, pickTarget(current, intent.character > .6 ? 85 : 35), durationSeconds, now);
+      for (const state of leaders) { state.transition = { ...mode.masterTransition }; announceTransition(mode, state, now); }
+      return;
+    }
+    const activeDuration = mode.masterTransition.kickTransition
+      ? mode.masterTransition.durationMs / 1000 : durationSeconds;
+    advanceMusicTransition(mode.masterTransition, now, activeDuration);
+    for (const state of leaders) state.transition = { ...mode.masterTransition };
     return;
   }
   for (const state of leaders) {
-    if (!state.transition.musicDriven) {
+    if (intent.kick.triggered) {
       const current = transitionHue(state.transition, now);
-      const distance = circularHueDistance(current, state.transition.toHue);
-      state.transition = { ...transitionTo(current, state.transition.toHue, Math.max(.1, distance / degreesPerSecond), now),
-        easing: "smoothstep", musicDriven: true };
-      continue;
+      const target = pickTarget(current, 100);
+      state.transition = { ...musicTransition(current, target, intent.kick.transitionSeconds, now), easing: "easeOutQuad", kickTransition: true };
+      intent.kick.retargeted = true;
+      announceTransition(mode, state, now);
+    } else if (state.transition.musicDriven && transitionProgress(state.transition, now) >= 1) {
+      const current = transitionHue(state.transition, now);
+      const target = pickTarget(current, intent.character > .6 ? 85 : 35);
+      state.transition = musicTransition(current, target, durationSeconds, now);
+      announceTransition(mode, state, now);
+    } else if (!state.transition.musicDriven) {
+      const current = transitionHue(state.transition, now);
+      state.transition = musicTransition(current, pickTarget(current, 45), durationSeconds, now);
+      announceTransition(mode, state, now);
     }
-    const progress = transitionProgress(state.transition, now);
-    const distance = Math.max(1, Math.abs(state.transition.toHue - state.transition.fromHue));
-    const durationMs = Math.max(100, distance / degreesPerSecond * 1000);
-    state.transition.durationMs = durationMs;
-    state.transition.startedAt = now - progress * durationMs;
+    const activeDuration = state.transition.kickTransition && transitionProgress(state.transition, now) < 1
+      ? state.transition.durationMs / 1000 : durationSeconds;
+    advanceMusicTransition(state.transition, now, activeDuration);
   }
 }
 
@@ -529,13 +550,16 @@ function releaseMusicTransitions(config, states, mode, now) {
 }
 
 function freezeAutomaticTransitions(states, mode, elapsedMs) {
-  for (const state of states) if (state.staticHue === null) state.transition.startedAt += elapsedMs;
+  for (const state of states) if (state.staticHue === null) {
+    state.transition.startedAt += elapsedMs;
+    if (state.transition.musicDriven) state.transition.lastUpdate += elapsedMs;
+  }
   mode.masterTransition.startedAt += elapsedMs;
+  if (mode.masterTransition.musicDriven) mode.masterTransition.lastUpdate += elapsedMs;
 }
 
 function musicCanDriveHue(config, mode, playbackStatus, releaseAmount = 0) {
-  return config.music.enabled && config.music.influencePercent > 0 && !mode.externalControlled &&
-    (playbackStatus === "READY" || releaseAmount > 0);
+  return config.music.enabled && (playbackStatus === "READY" || releaseAmount > 0);
 }
 
 function setIndividualMode(config, states, mode, now) {
@@ -611,6 +635,8 @@ function createExternalMasterMonitor(config, states, mode) {
   let tableState = null;
   let lastFollowAt = -Infinity;
   let lastFollowHue = null;
+  let musicMaster = null;
+  let lastMusicCommandAt = -Infinity;
   let stopped = false;
   let port = null;
   let scanTimer = null;
@@ -629,7 +655,13 @@ function createExternalMasterMonitor(config, states, mode) {
     if (stopped || port) return;
     try {
       const ports = await SerialPort.list();
-      const match = ports.find(candidate => candidate.vendorId?.toLowerCase() === wantedVendorId);
+      const unidentifiedUsbSerial = ports.filter(candidate => !candidate.vendorId &&
+        /^\/dev\/(?:tty|cu)\.(?:usbserial|wchusbserial|usbmodem)/i.test(candidate.path) &&
+        candidate.path !== config.openDmx.path);
+      const match = (config.externalMaster.path
+        ? ports.find(candidate => candidate.path === config.externalMaster.path) : null)
+        ?? ports.find(candidate => candidate.vendorId?.toLowerCase() === wantedVendorId)
+        ?? (unidentifiedUsbSerial.length === 1 ? unidentifiedUsbSerial[0] : null);
       if (!match) {
         scheduleScan();
         return;
@@ -726,6 +758,7 @@ function createExternalMasterMonitor(config, states, mode) {
     if (port === connection && tableState) tableState = { static: hue !== null, hue: hue ?? tableState.hue };
   };
   const syncTablePair = async (now = performance.now(), force = false) => {
+    if (musicMaster) return;
     const leader = tableLeader();
     if (!leader || !port?.isOpen || !tableState || (!force && now - lastFollowAt < 50)) return;
     const current = leader.staticHue ?? transitionHue(leader.transition, now);
@@ -739,6 +772,37 @@ function createExternalMasterMonitor(config, states, mode) {
   return {
     tableLeader,
     syncTablePair,
+    syncMusicMaster: async (transition, intent = null, now = performance.now()) => {
+      if (!port?.isOpen || !tableState || !transition) return false;
+      const target = ((transition.toHue % 360) + 360) % 360;
+      const structureMode = intent?.structure?.mode ?? "NORMAL";
+      const targetChanged = !musicMaster || Math.abs(((target - musicMaster.target + 540) % 360) - 180) >= .01;
+      const structuralChange = musicMaster?.structureMode !== structureMode && ["STOP", "START"].includes(structureMode);
+      if (!targetChanged && !structuralChange) return false;
+      if (now - lastMusicCommandAt < 180) return false;
+      const remainingMs = Math.min(90000, Math.max(100,
+        (1 - transitionProgress(transition, now)) * transition.durationMs));
+      await serialAction(done => port.write(`MASTER ${target} ${Math.round(remainingMs)}\n`, done));
+      musicMaster = { target, structureMode };
+      lastMusicCommandAt = now;
+      console.log(`Table master target ${target.toFixed(1)}° over ${(remainingMs / 1000).toFixed(2)}s.`);
+      return true;
+    },
+    releaseMusicMaster: async () => {
+      if (!musicMaster) return false;
+      musicMaster = null; lastMusicCommandAt = -Infinity;
+      if (port?.isOpen && tableState) await serialAction(done => port.write("WANDER\n", done));
+      console.log("Table master released; table lights resumed autonomous wandering.");
+      return true;
+    },
+    holdMusicMaster: async (hue, now = performance.now()) => {
+      if (!musicMaster || !port?.isOpen || musicMaster.structureMode === "PAUSED") return false;
+      const normalized = ((hue % 360) + 360) % 360;
+      musicMaster = { target: normalized, structureMode: "PAUSED" };
+      await serialAction(done => port.write(`MASTER ${normalized} 90000\n`, done));
+      lastMusicCommandAt = now;
+      return true;
+    },
     pairTable: async leader => {
       if (!port?.isOpen || !tableState) fail("Table lights bridge is unavailable");
       const previous = mode.tablePairLeaderId;
@@ -765,6 +829,7 @@ function createExternalMasterMonitor(config, states, mode) {
         targetHue: leader ? leader.staticHue ?? ((leader.transition.toHue % 360) + 360) % 360 : null,
         durationMs: leader && leader.staticHue === null
           ? Math.max(0, (1 - transitionProgress(leader.transition, now)) * leader.transition.durationMs) : 0,
+        bridgeMasterOverride: tableState.master ?? null,
         lightsUpColour: { red: 255, green: 255, blue: 255 }
       }];
     },
@@ -786,25 +851,25 @@ function createExternalMasterMonitor(config, states, mode) {
   };
 }
 
-function renderUniverse(config, states, now, controls) {
-  // Buffer.alloc fills every channel with zero before mapped values are applied.
-  const universe = Buffer.alloc(config.universeLength, 0);
-  for (const state of states) {
+function fixtureOutput(config, states, state, now, controls) {
     const controllingState = pairLeader(states, state);
     let hue = controllingState.staticHue ?? transitionHue(controllingState.transition, now);
-    const music = controllingState.staticHue === null ? controls.musicIntent : null;
+    const music = controllingState.staticHue === null ? controls.outputMusicIntent ?? controls.musicIntent : null;
     if (music?.accent) {
       const fixtureIndex = states.indexOf(state);
       const accentHue = (music.accent.hue + [-16, -5, 7, 20][fixtureIndex % 4] + 360) % 360;
       hue = hueMix(hue, accentHue, music.accent.shape * music.influence);
     }
     const musicValue = music ? music.brightness : 1;
-    const hasDimmer = "brightness" in state.fixture.type.channels;
+    const channels = state.fixture.type?.channels ?? {};
+    const hasDimmer = "brightness" in channels;
     let [red, green, blue] = hsvToRgb(hue, music ? music.saturation : 1, hasDimmer ? 1 : musicValue);
-    const upLevel = lightsUpLevel(controls.mode, now);
-    red = Math.round(red + (state.fixture.lightsUpColour.red - red) * upLevel);
-    green = Math.round(green + (state.fixture.lightsUpColour.green - green) * upLevel);
-    blue = Math.round(blue + (state.fixture.lightsUpColour.blue - blue) * upLevel);
+    const upLevel = controls.mode?.lightsUpTransition
+      ? lightsUpLevel(controls.mode, now) : Number(Boolean(controls.mode?.lightsUp));
+    const lightsUpColour = state.fixture.lightsUpColour ?? { red: 255, green: 255, blue: 255 };
+    red = Math.round(red + (lightsUpColour.red - red) * upLevel);
+    green = Math.round(green + (lightsUpColour.green - green) * upLevel);
+    blue = Math.round(blue + (lightsUpColour.blue - blue) * upLevel);
     if (!hasDimmer) {
       const scale = controls.masterBrightness / 255;
       red = Math.round(red * scale);
@@ -813,6 +878,14 @@ function renderUniverse(config, states, now, controls) {
     }
     const outputValue = musicValue + (1 - musicValue) * upLevel;
     const values = { red, green, blue, brightness: Math.round(controls.masterBrightness * outputValue) };
+    return { hue: ((hue % 360) + 360) % 360, values, musicValue, controllingState };
+}
+
+function renderUniverse(config, states, now, controls) {
+  // Buffer.alloc fills every channel with zero before mapped values are applied.
+  const universe = Buffer.alloc(config.universeLength, 0);
+  for (const state of states) {
+    const { values } = fixtureOutput(config, states, state, now, controls);
     for (const [role, offset] of Object.entries(state.fixture.type.channels)) {
       universe[state.fixture.address + offset - 2] = values[role];
     }
@@ -964,6 +1037,8 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
   snapshot: { status: "NO_TRACK", title: null, error: null }, position: () => 0,
   receive: () => false
 }) {
+  controls.mode ??= mode;
+  controls.masterBrightness ??= config.masterBrightness;
   const tableLeader = () => externalMaster.tableLeader?.();
   const splitSelection = ids => {
     const hasTable = Array.isArray(ids) && ids.includes(TABLE_LIGHTS_ID);
@@ -988,6 +1063,10 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
   };
   mode.broadcastLightsUp = payload => {
     const event = `event: lights-up\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const client of eventClients) client.write(event);
+  };
+  mode.broadcastOutput = payload => {
+    const event = `event: output\ndata: ${JSON.stringify(payload)}\n\n`;
     for (const client of eventClients) client.write(event);
   };
   const assets = new Map([
@@ -1024,6 +1103,7 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
       }
       if (request.method === "GET" && url.pathname === "/api/state") {
         const now = performance.now();
+        const displayedIntent = controls.outputMusicIntent ?? controls.musicIntent;
         json(response, 200, {
           dmx: transport?.status ?? { connected: false, outputs: [] },
           masterBrightness: controls.masterBrightness,
@@ -1037,12 +1117,17 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
             analysisMs: playback.snapshot.analysisMs ?? null,
             positionSeconds: playback.position(performance.now(), config.music.avDelayMs),
             durationSeconds: playback.snapshot.event?.durationSeconds ?? null,
-            intent: controls.musicIntent ? {
-              feature: controls.musicIntent.feature,
-              brightness: controls.musicIntent.brightness,
-              hueRate: controls.musicIntent.hueRate,
-              saturation: controls.musicIntent.saturation,
-              accent: controls.musicIntent.accent
+            intent: displayedIntent ? {
+              feature: displayedIntent.feature,
+              character: displayedIntent.character,
+              stepRate: displayedIntent.stepRate,
+              targetTransitionSeconds: displayedIntent.targetTransitionSeconds,
+              effectiveTransitionSeconds: displayedIntent.effectiveTransitionSeconds,
+              kick: displayedIntent.kick,
+              baseBrightness: displayedIntent.baseBrightness,
+              brightness: displayedIntent.brightness,
+              saturation: displayedIntent.saturation,
+              structure: displayedIntent.structure
             } : null
           },
           externalMaster: {
@@ -1056,7 +1141,9 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
           },
           fixtures: states.map(state => {
             const controllingState = pairLeader(states, state);
-            const hue = ((controllingState.staticHue ?? transitionHue(controllingState.transition, now)) % 360 + 360) % 360;
+            const output = fixtureOutput(config, states, state, now, controls);
+            const hue = output.hue;
+            const hasDimmer = "brightness" in (state.fixture.type?.channels ?? {});
             return {
               id: state.fixture.id,
               name: state.fixture.name,
@@ -1072,7 +1159,17 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
                 : hue,
               durationMs: controllingState.staticHue === null
                 ? Math.max(0, (1 - transitionProgress(controllingState.transition, now)) * controllingState.transition.durationMs)
-                : 0
+                : 0,
+              easing: controllingState.transition.easing ?? "linear",
+              finalRgb: { red: output.values.red, green: output.values.green, blue: output.values.blue },
+              finalBrightness: output.values.brightness,
+              progress: controllingState.staticHue === null ? transitionProgress(controllingState.transition, now) : 1,
+              ownership: controllingState.staticHue !== null ? "static"
+                : mode.externalControlled ? "external master"
+                  : mode.name === "master" ? "local master"
+                    : controllingState.transition.musicDriven ? "individual music" : "individual wander",
+              outputDmxValue: output.values.brightness,
+              outputPath: hasDimmer ? "dimmer" : "rgb-scale"
             };
           }).concat(externalMaster.tableFixture?.() ?? [])
         });
@@ -1351,11 +1448,15 @@ async function main() {
   let nextFrame = performance.now();
   let previousFrame = nextFrame;
   let musicWasDriving = false;
+  let loggedMusicSession = null;
+  let loggedMusicSecond = null;
+  let tableMusicMasterActive = false;
   const tick = async () => {
     if (stopped) return;
     const now = performance.now();
     try {
-      const musicCanDrive = config.music.enabled && config.music.influencePercent > 0;
+      const musicCanDrive = config.music.enabled;
+      const musicPosition = playback.position(now, config.music.avDelayMs);
       if (musicCanDrive && playback.snapshot.status === "PAUSED") {
         freezeAutomaticTransitions(states, mode, Math.max(0, now - previousFrame));
       }
@@ -1365,7 +1466,7 @@ async function main() {
       if (musicCanDrive && playback.snapshot.profile && (["READY", "PAUSED"].includes(playback.snapshot.status) || musicRelease > 0)) {
         const nextIntent = computeMusicIntent(
           playback.snapshot.profile,
-          playback.position(now, config.music.avDelayMs),
+          musicPosition,
           config.music,
           musicState,
           now / 1000,
@@ -1376,7 +1477,7 @@ async function main() {
           controls.musicIntent = nextIntent;
           const canDriveHue = musicCanDriveHue(config, mode, playback.snapshot.status, musicRelease);
           if (!canDriveHue && musicWasDriving) releaseMusicTransitions(config, states, mode, now);
-          if (canDriveHue) applyMusicRate(states, mode, now, nextIntent.hueRate);
+          if (canDriveHue) applyMusicMotion(config, states, mode, now, nextIntent);
           musicWasDriving = canDriveHue;
         }
       } else if (playback.snapshot.status !== "ANALYSING") {
@@ -1385,10 +1486,54 @@ async function main() {
         controls.musicIntent = null;
         musicState.lastAt = null;
       }
+      const musicSecond = Math.floor(musicPosition);
+      if (playback.snapshot.status === "READY" && playback.snapshot.profile &&
+          (loggedMusicSession !== playback.snapshot.sessionId || loggedMusicSecond !== musicSecond)) {
+        const feature = controls.musicIntent?.feature ?? sampleProfile(playback.snapshot.profile, musicPosition);
+        if (feature) {
+          let line = formatMusicDiagnostic(musicPosition, feature, controls.musicIntent);
+          const representative = states.find(state => !isPairFollower(state) && state.staticHue === null);
+          if (representative) {
+            const progress = transitionProgress(representative.transition, now);
+            const rendered = fixtureOutput(config, states, representative, now, controls);
+            const owner = mode.externalControlled ? "external-master" : mode.name === "master" ? "local-master"
+              : representative.transition.musicDriven ? "individual-music" : "individual-wander";
+            const finalValue = Math.round(controls.masterBrightness * (controls.musicIntent?.brightness ?? 1));
+            line += ` fixture=${representative.fixture.id} hue=${transitionHue(representative.transition, now).toFixed(1)}` +
+              ` target=${(((representative.transition.toHue % 360) + 360) % 360).toFixed(1)}` +
+              ` progress=${progress.toFixed(3)} remaining=${((1 - progress) * representative.transition.durationMs / 1000).toFixed(1)}s` +
+              ` owner=${owner} output=${finalValue}/${"brightness" in representative.fixture.type.channels ? "dimmer" : "rgb-scale"}` +
+              ` finalRGB=${rendered.values.red},${rendered.values.green},${rendered.values.blue}`;
+          }
+          console.log(line);
+        }
+        loggedMusicSession = playback.snapshot.sessionId;
+        loggedMusicSecond = musicSecond;
+      }
+      const tableShouldFollowMaster = mode.name === "master";
+      const musicMasterPaused = tableShouldFollowMaster && playback.snapshot.status === "PAUSED" && controls.musicIntent;
+      if (tableShouldFollowMaster && !musicMasterPaused) {
+        await externalMaster.syncMusicMaster?.(mode.masterTransition, controls.musicIntent, now)
+          .catch(error => console.warn(`Could not update table master: ${error.message}`));
+        tableMusicMasterActive = true;
+      } else if (musicMasterPaused) {
+        await externalMaster.holdMusicMaster?.(transitionHue(mode.masterTransition, now), now)
+          .catch(error => console.warn(`Could not pause table master: ${error.message}`));
+      } else if (tableMusicMasterActive) {
+        await externalMaster.releaseMusicMaster?.().catch(error => console.warn(`Could not release table music master: ${error.message}`));
+        tableMusicMasterActive = false;
+      }
       await externalMaster.syncTablePair?.(now).catch(error => {
         console.warn(`Could not update paired table lights: ${error.message}`);
       });
-      await transport.send(renderUniverse(config, states, now, controls));
+      const universe = renderUniverse(config, states, now, controls);
+      mode.broadcastOutput?.(states.map(state => {
+        const output = fixtureOutput(config, states, state, now, controls);
+        return { id: state.fixture.id, hue: output.hue,
+          rgb: { red: output.values.red, green: output.values.green, blue: output.values.blue },
+          brightness: output.values.brightness };
+      }));
+      await transport.send(universe);
     } catch (error) {
       console.error(`DMX write failed: ${error.message}`);
       await stop("DMX error");
