@@ -126,23 +126,28 @@ through the dimmer channel. The existing `masterBrightness` is applied after
 the music value. Static/manual fixtures are not given a music brightness floor,
 and explicit zero/blackout remains zero.
 
-The fixture indicators on the web page show both the production hue and its
-current musical brightness. They are a status display, not a separate lighting
-simulation.
+The fixture indicators on the web page show the production hue at full visual
+brightness so they match the colour wheel. Current musical brightness is shown
+in the music-output status and still applies to the physical DMX output.
+
+Colour transitions use a deliberately wide dynamic range: steady, simple music
+wanders slowly, while strong combined drive, activity, and intensity accelerates
+transitions and therefore selects new colour targets more often. Acceleration is
+quick and deceleration remains gradual to avoid nervous changes.
 
 ### Dramatic pauses
 
 Confident pause events can temporarily coordinate the otherwise independent
 DMX colours. The default V10-derived envelope begins eight seconds before the
-pause with a slight dim, builds over the final six seconds, holds through the
-pause and for 2.5 seconds after the return, then releases over 4.5 seconds.
+pause with a 35% dim, builds over the final six seconds, holds through the
+pause and for 0.5 seconds after the return, then releases over 4.5 seconds.
 Brightness remains within the configured minimum and maximum after the effect
 is applied. Manual/static colours, lights-up, and other higher-priority controls
 continue to win.
 
-This first draft deliberately retains the V10-derived pause treatment. Stronger
-pause or peak-moment effects are deferred until the baseline has been evaluated
-on physical fixtures.
+The timing remains V10-derived apart from the stronger lead dim and shorter
+post-return hold. Stronger pause or peak-moment effects are deferred until the
+baseline has been evaluated on physical fixtures.
 
 ### Music controls
 

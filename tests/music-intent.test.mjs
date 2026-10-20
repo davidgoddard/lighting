@@ -20,9 +20,26 @@ test("zero influence preserves legacy value and full influence stays bounded", (
   assert.ok(full.brightness >= .25 && full.brightness <= 1); assert.ok(full.hueRate > 1.7);
 });
 
-test("dramatic pause uses the V10 lead, hold, and return envelope", () => {
+test("transition rate stays slow for simple music and opens up for energetic music", () => {
+  const step = values => ({ energy: .5, fastEnergy: .5, fastActivity: .1, activity: .2,
+    intensity: .4, drive: .15, development: 0, trend: "STABLE", ...values });
+  const simple = { duration: 2, steps: [step(), step()], pauses: [] };
+  const energetic = { duration: 2, steps: [step({ fastEnergy: .95, fastActivity: .9, activity: .9,
+    intensity: .9, drive: .9 }), step({ fastEnergy: .95, fastActivity: .9, activity: .9, intensity: .9, drive: .9 })], pauses: [] };
+  const config = validateMusicConfig({ enabled: true });
+  const slowRate = computeMusicIntent(simple, 0, config, createMusicIntentState(), 1, 1).hueRate;
+  const fastRate = computeMusicIntent(energetic, 0, config, createMusicIntentState(), 1, 1).hueRate;
+  assert.ok(slowRate < 2, `expected a gentle steady rate, got ${slowRate}`);
+  assert.ok(fastRate > 90, `expected energetic music to move rapidly, got ${fastRate}`);
+  assert.ok(fastRate / slowRate > 50, "expected a wide musical transition range");
+});
+
+test("dramatic pause uses a stronger lead dim and short post-return hold", () => {
   const config = validateMusicConfig();
   assert.equal(pauseEnvelope(profile, 6.9, config), null);
+  assert.equal(pauseEnvelope(profile, 9, config).brightness, .65);
   assert.equal(pauseEnvelope(profile, 15.2, config).phase, "holding");
-  assert.equal(pauseEnvelope(profile, 19, config).phase, "returning");
+  assert.equal(pauseEnvelope(profile, 15.99, config).phase, "holding");
+  assert.equal(pauseEnvelope(profile, 16, config).phase, "returning");
+  assert.equal(pauseEnvelope(profile, 20.5, config), null);
 });

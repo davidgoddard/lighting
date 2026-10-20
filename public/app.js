@@ -35,7 +35,7 @@ let brightnessTimer;
 let lightsUp = false;
 let musicSaveTimer;
 
-function renderMusic(music, visibleFixtures = fixtures) {
+function renderMusic(music) {
   if (!music) return;
   const labels = { NO_TRACK: "No track", ANALYSING: "Analysing — current lighting held", READY: "Music profile ready", PAUSED: "Playback paused", UNAVAILABLE: "Music analysis unavailable" };
   const statusLabel = music.kind === "cortina"
@@ -56,12 +56,6 @@ function renderMusic(music, visibleFixtures = fixtures) {
   document.querySelector("#music-output").textContent = music.intent
     ? `Value ${Math.round(music.intent.brightness * 100)}% · ${music.intent.hueRate.toFixed(1)}°/s${music.intent.accent ? ` · ${music.intent.accent.phase} accent (${Math.round(music.intent.accent.score * 100)}%)` : ""}${timing}${analysis}`
     : `Legacy lighting output${timing}${analysis}`;
-  const musicValue = music.intent?.brightness ?? 1;
-  for (const fixture of visibleFixtures) {
-    const card = document.querySelector(`.light[data-id="${CSS.escape(fixture.id)}"]`);
-    const value = fixture.kind !== "bridge" && fixture.mode === "wander" ? musicValue : 1;
-    card?.style.setProperty("--light-value", String(value));
-  }
 }
 
 function scheduleMusicSave() {
@@ -213,7 +207,7 @@ async function refreshEspStatus() {
     if (!response.ok) return;
     const latestState = await response.json();
     const { externalMaster, dmx, fixtures: latest } = latestState;
-    renderMusic(latestState.music, latest);
+    renderMusic(latestState.music);
     renderEspStatus(externalMaster);
     renderDmxStatus(dmx);
     if (!staticUpdateRunning && !staticUpdatePending && !dragging) {
@@ -285,7 +279,6 @@ function renderLights() {
     label.dataset.id = fixture.id;
     label.dataset.mode = fixture.mode;
     label.style.setProperty("--light-colour", `hsl(${fixture.hue} 100% 50%)`);
-    label.style.setProperty("--light-value", "1");
     const modeText = fixture.mode === "static"
       ? "Static"
       : fixture.kind === "bridge" ? "Automatic" : fixture.automaticMode === "master" ? "Master" : "Individual";
@@ -498,7 +491,7 @@ try {
   renderEspStatus(initialState.externalMaster);
   renderDmxStatus(initialState.dmx);
   renderLights();
-  renderMusic(initialState.music, initialState.fixtures);
+  renderMusic(initialState.music);
   for (const fixture of fixtures) {
     if (fixture.mode === "wander") startLightTransition({
       id: fixture.id,

@@ -58,16 +58,16 @@ export function pauseEnvelope(profile, position, config) {
   let chosen = null;
   for (let index = 0; index < (profile?.pauses ?? []).length; index += 1) {
     const pause = profile.pauses[index];
-    if (pause.score < config.dramaticPauseMinimumScore || position < pause.time - 8 || position > pause.end + 7) continue;
+    if (pause.score < config.dramaticPauseMinimumScore || position < pause.time - 8 || position >= pause.end + 5) continue;
     let shape, brightness, phase;
     if (position < pause.time - 6) {
-      const q = smoothstep((position - (pause.time - 8)) / 2); shape = .12 * q; brightness = 1 - .28 * q; phase = "preparing";
+      const q = smoothstep((position - (pause.time - 8)) / 2); shape = .12 * q; brightness = 1 - .35 * q; phase = "preparing";
     } else if (position < pause.time) {
-      const q = smoothstep((position - (pause.time - 6)) / 6); shape = mix(.12, 1, q); brightness = mix(.72, 1.27, q); phase = "building";
-    } else if (position < pause.end + 2.5) {
+      const q = smoothstep((position - (pause.time - 6)) / 6); shape = mix(.12, 1, q); brightness = mix(.65, 1.27, q); phase = "building";
+    } else if (position < pause.end + .5) {
       shape = 1; brightness = 1.27; phase = "holding";
     } else {
-      const q = smoothstep((position - (pause.end + 2.5)) / 4.5); shape = 1 - q; brightness = mix(1.27, 1, q); phase = "returning";
+      const q = smoothstep((position - (pause.end + .5)) / 4.5); shape = 1 - q; brightness = mix(1.27, 1, q); phase = "returning";
     }
     const candidate = { shape, brightness, phase, hue: [44, 315, 190][index % 3], score: pause.score };
     if (!chosen || candidate.shape > chosen.shape) chosen = candidate;
@@ -89,7 +89,10 @@ export function computeMusicIntent(profile, position, config, previous, nowSecon
   const powerWeight = smoothstep((feature.intensity - .36) / .44);
   const liftWeight = smoothstep(Math.max(0, feature.fastEnergy - feature.intensity) / .20);
   const urgency = clamp(.32 * driveWeight + .32 * busyWeight + .26 * powerWeight + .10 * liftWeight);
-  const baseRate = 1.7 + 36.3 * smoothstep((urgency - .10) / .70);
+  // Keep simple, steady passages spacious while reserving rapid colour changes
+  // for music where drive, activity, and intensity agree that energy is high.
+  const energeticRate = smoothstep((urgency - .18) / .64) ** 2;
+  const baseRate = .65 + 47.35 * energeticRate;
   const requestedRate = baseRate * config.transitionSpeedPercent / 100;
   const targetRate = mix(1.7, requestedRate, influence);
   const rateTau = targetRate > previous.hueRate ? .55 : 2.7;
