@@ -37,12 +37,13 @@ Tanda Forge posts versioned snapshots of its main-output playback to
 output. Headphone previews never drive the lights, and cortinas continue to use
 the higher-priority lights-up behavior.
 
-Music mode is disabled when the `music` section is absent or uses
-`"enabled": false`. Enabling it affects automatic DMX fixtures only. Static
-colours, explicit lights-up, fixture pairing, master mode, global brightness,
-and fixture mappings keep their existing priority. Table lights do not receive
-audio or brightness data; in master mode they receive only shared hue targets
-and transition durations derived from the same musical intent.
+Music mode defaults to disabled when the `music` section is absent or uses
+`"enabled": false`; the supplied venue `config.json` enables it. Enabling it
+affects automatic DMX fixtures only. Static colours, explicit lights-up,
+fixture pairing, master mode, global brightness, and fixture mappings keep
+their existing priority. Table lights do not receive audio or brightness data;
+in master mode they receive only shared hue targets and transition durations
+derived from the same analysed musical events.
 
 ### Momentum algorithm
 
@@ -75,14 +76,17 @@ values produced by the same renderer as DMX.
 Whenever master mode is active, every automatic DMX fixture uses one shared
 trajectory and the table lights receive that same target hue and remaining
 transition duration. This begins immediately even if music analysis is still
-pending or music response is disabled. Commands are deduplicated and
-rate-limited. Music pause sends a hold;
-master exit, stop, cortina or disconnection returns the bridge to autonomous
-wandering. Table-light brightness is unchanged.
+pending or music response is disabled. The application sends a new bridge
+destination only when the target or a relevant structural state changes, with
+a minimum 180 ms command interval; it does not transmit on every 40 FPS DMX
+frame. A music pause sends a long-duration hold. Master exit or bridge
+disconnection returns the table lights to autonomous wandering; lights-up /
+cortina temporarily overrides colour through the existing bridge command.
+Table-light brightness is otherwise unchanged.
 
 ### Music controls
 
-The web page exposes the prototype controls with its original defaults:
+The web page exposes the prototype controls. Their application defaults are:
 
 - minimum/maximum brightness: 25% / 100%; gamma: 1.05;
 - rhythmic momentum influence: 100%; above-average energy influence: 75%;
@@ -90,7 +94,7 @@ The web page exposes the prototype controls with its original defaults:
 - exceptional kick threshold: 90%; exceptional kick colour time: 650 ms;
 - structure effects enabled; AV delay 0 ms.
 
-The corresponding configuration is:
+The corresponding default configuration is:
 
 ```json
 "music": {
@@ -108,6 +112,11 @@ The corresponding configuration is:
   "avDelayMs": 0
 }
 ```
+
+Values explicitly present in `config.json` override these defaults. In the
+supplied venue configuration music response is enabled and exceptional kick
+colour time is 800 ms; the remaining music values currently match the defaults
+above.
 
 FFmpeg must be available on `PATH`. Positive AV delay means later light. Venue
 audio, OS, USB, and fixture latency should be measured before relying on a final
@@ -301,7 +310,10 @@ The ESP table-lights bridge sketch is included at
 ESP-NOW-connected table lights.
 
 Lighting scans for the configured USB vendor ID (normally `1a86`) and opens the
-bridge at 115200 baud. Configure or disable it under `externalMaster`:
+bridge at 115200 baud. No machine-specific serial path is built in. If the
+operating system does not report a vendor ID, Lighting accepts one unambiguous
+USB serial candidate; an explicit `path` is only an optional installation-level
+override. Configure or disable the bridge under `externalMaster`:
 
 ```json
 "externalMaster": {
@@ -321,14 +333,24 @@ The bridge and Lighting exchange newline-delimited messages:
 - The bridge can report an ESP-NOW colour target as
   `UDP: hue,durationMilliseconds,brightness,syncMode`.
 
-When `syncMode` is `true`, automatic DMX fixtures move to the received hue over
-the supplied duration. When it is `false`, they resume individual wandering.
-While the bridge is connected it owns the master/wander decision, so the local
-virtual master is suspended. If it disconnects, local master operation resumes.
-Static web-page colour overrides remain in place.
+When `syncMode` is `true`, the bridge has entered master mode: automatic DMX
+fixtures move to the received hue over the supplied duration, and Lighting
+then supplies the shared, music-responsive master destinations back to the
+table-light group with `MASTER` commands. When it is `false`, DMX fixtures and
+table lights use their individual/autonomous wandering behaviour. Merely
+plugging in the bridge does not force master mode: the indicator remains
+**awaiting data** until a valid `UDP:` report arrives.
+
+While connected, the bridge owns the master/wander decision, so Lighting's
+timed local virtual-master scheduler is suspended. This authority is not a
+permanent master session: each valid `syncMode` report can enter or leave
+master mode. If the serial bridge disconnects, external authority is released
+and local individual/master scheduling resumes. Static web-page colour
+overrides remain in place.
 
 The ESP indicator initially says **awaiting data** because connection alone does
-not provide a colour target. It changes after a valid bridge message arrives.
+not provide a colour target or master/wander state. It changes after a valid
+bridge message arrives.
 
 ## Tanda Forge integration
 
