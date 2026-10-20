@@ -30,6 +30,158 @@ then returns them to independent wandering. Configure this with `masterMode`.
 Fixtures held at a static colour from the web page are not changed by normal or
 master wandering.
 
+## Music-aware DMX mode
+
+Tanda Forge posts versioned snapshots of its main-output playback to
+`POST /api/playback`. Lighting reacts only to normal tango playback on that
+output. Headphone previews never drive the lights, and cortinas continue to use
+the higher-priority lights-up behavior.
+
+Music mode is disabled when the `music` section is absent or uses
+`"enabled": false`. Enabling it affects automatic DMX fixtures only. Static
+colours, explicit lights-up, fixture pairing, master mode, global brightness,
+and external-master ownership keep their existing priority. Table lights do not
+receive audio data or music brightness commands.
+
+### Analysis lifecycle
+
+When a new main-output tango starts, Lighting:
+
+1. Keeps the currently visible lighting behavior running while analysis takes
+   place. It does not black out, reset hues, or restart the playback clock.
+2. Starts a Node worker which asks FFmpeg to decode the complete local recording
+   to mono floating-point PCM at 11,025 Hz.
+3. Analyses 1,024-sample windows, approximately 92.9 ms each. Decoding and FFT
+   work occur outside the configured 40 FPS DMX loop.
+4. Keeps the resulting profile in memory for that playback occurrence only.
+   There is no profile cache, queue pre-analysis, or disk output.
+5. Samples the profile at Tanda Forge's current actual media position and blends
+   the music response in over `activationBlendSeconds`, normally three seconds.
+
+A replay is a new occurrence and is analysed again. Superseded worker results
+are ignored. Missing FFmpeg, an inaccessible file, an unsupported codec, or a
+decode failure leaves legacy wandering active and reports the problem in the
+web page and terminal.
+
+The analyser derives expressive lighting inputs rather than identifying genre,
+mood, or a precise BPM:
+
+- **Energy** is normalized within each recording using robust loudness
+  percentiles, so quiet and loud recordings can both use the configured range.
+- **Fast energy** follows short sung and instrumental phrases more closely and
+  supplies most of the brightness response.
+- **Spectral activity** measures positive changes across frequency bands.
+- **Rhythmic drive** is an autocorrelation-based periodic-accent proxy, not a
+  BPM estimate.
+- **Development** describes sustained rising, falling, or stable intensity.
+- **Pause candidates** identify short, confident drops followed by a clear
+  musical return. Only scores at or above the configured threshold receive an
+  accent.
+
+The web page reports the current analysis/transport state, track basename,
+analysis duration, source position, intensity, fast energy/activity, rhythmic
+drive, development, output brightness, hue rate, and any active pause accent.
+
+### Effect on colour and transitions
+
+Music does not select fixed warm, cool, or genre-based palettes. In individual
+mode, every automatic fixture or pair leader continues choosing an independent
+random destination over the complete 0–360° hue wheel. Music-aware destinations
+are kept at least approximately 48° away so a new transition is visibly
+meaningful. Hues travel by the shortest circular route with smoothstep easing.
+
+The music changes how quickly each fixture progresses towards its existing
+destination; it does not choose a new target on every DMX frame. Rhythmic drive,
+fast activity, sustained intensity, and short phrase lift are combined and
+nonlinearly mapped to approximately 1.7–38° per second before applying the
+Transition speed percentage. Acceleration into energetic material is faster
+than deceleration back into calm passages, which avoids nervous speed changes.
+
+In master mode, fixtures retain their shared target and timing. Paired fixtures
+continue following their pair leader. If an external ESP master owns the
+master/wander decision, music does not retime its hue transitions.
+
+At 0% Music influence, legacy target selection, colour, brightness, saturation,
+and transition timing are retained. Disabling music or stopping playback blends
+back to legacy automatic operation rather than fading the room to black.
+
+### Effect on brightness and saturation
+
+The principal brightness input is:
+
+```text
+expressiveEnergy = 0.72 × fastEnergy + 0.28 × intensity
+value = minimum + (maximum - minimum) × expressiveEnergy ^ gamma
+```
+
+The default range is 25–100% with gamma 1.05. Brightness rises with a 0.42 s
+time constant and falls with a slower 0.70 s time constant. This produces
+visible musical phrasing without turning every short accent into a flash.
+
+Saturation normally remains around 92–99%. Brightness is adjusted as HSV value,
+not by mixing towards white, so bright fixtures remain strongly coloured.
+RGB-only fixtures scale their red, green, and blue channels together. Fixtures
+with a dedicated dimmer retain saturated RGB and apply the musical value once
+through the dimmer channel. The existing `masterBrightness` is applied after
+the music value. Static/manual fixtures are not given a music brightness floor,
+and explicit zero/blackout remains zero.
+
+The fixture indicators on the web page show both the production hue and its
+current musical brightness. They are a status display, not a separate lighting
+simulation.
+
+### Dramatic pauses
+
+Confident pause events can temporarily coordinate the otherwise independent
+DMX colours. The default V10-derived envelope begins eight seconds before the
+pause with a slight dim, builds over the final six seconds, holds through the
+pause and for 2.5 seconds after the return, then releases over 4.5 seconds.
+Brightness remains within the configured minimum and maximum after the effect
+is applied. Manual/static colours, lights-up, and other higher-priority controls
+continue to win.
+
+This first draft deliberately retains the V10-derived pause treatment. Stronger
+pause or peak-moment effects are deferred until the baseline has been evaluated
+on physical fixtures.
+
+### Music controls
+
+The web page persists these controls into the active configuration file:
+
+- **Enabled** turns music-derived DMX intent on or off.
+- **Influence** blends between exact legacy behavior at 0% and the complete
+  music mapping at 100%.
+- **Transition speed** scales the requested hue movement rate; the default is
+  220%.
+- **Minimum/maximum brightness** bound the musical HSV value; defaults are
+  25% and 100%.
+- **Gamma** shapes the energy-to-brightness curve; the default is 1.05.
+- **AV delay** shifts profile sampling. A positive value makes the visible
+  response happen later; the default is 0 ms.
+- **Dramatic pause accents** enables or suppresses the prepared pause envelope.
+- **Reset defaults** restores the production control defaults.
+
+The corresponding configuration is:
+
+```json
+"music": {
+  "enabled": false,
+  "influencePercent": 100,
+  "transitionSpeedPercent": 220,
+  "minimumBrightnessPercent": 25,
+  "maximumBrightnessPercent": 100,
+  "gamma": 1.05,
+  "avDelayMs": 0,
+  "activationBlendSeconds": 3,
+  "dramaticPausesEnabled": true,
+  "dramaticPauseMinimumScore": 0.58
+}
+```
+
+FFmpeg must be available on `PATH`. Positive AV delay means later light. Venue
+audio, OS, USB, and fixture latency should be measured before relying on a final
+offset.
+
 ### Individual and master modes
 
 In individual wandering mode, each fixture chooses and follows its own colour
@@ -250,6 +402,16 @@ not provide a colour target. It changes after a valid bridge message arrives.
 ## Tanda Forge integration
 
 Tanda Forge treats Lighting as an optional local companion service:
+
+- Normal main-output tracks send versioned playback snapshots to
+  `POST http://127.0.0.1:8080/api/playback`, including the source path, actual
+  media position, duration, playback rate, transport state, session identity,
+  and ordered sequence number.
+- Playing snapshots arrive approximately every 750 ms and immediately on
+  transport changes. Lighting extrapolates the position only while playing.
+- Delivery is bounded and times out quickly; an unavailable Lighting process
+  never delays audio playback.
+- Headphone/cue playback is not published.
 
 - When main-output cortina playback starts, Tanda Forge sends
   `POST http://127.0.0.1:8080/api/lights` with `{ "up": true }`.

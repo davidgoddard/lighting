@@ -24,7 +24,7 @@ function harness() {
     ReadlineParser: class {},
     createServer: callback => { handler = callback; return { once() {} }; }
   });
-  vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse};', context);
+  vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicRate, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue};', context);
   return { api: context.api, port: () => port, request: async (path, body) => {
     const request = Object.assign(Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []), { method: body ? 'POST' : 'GET', url: path });
     let status, result;
@@ -149,4 +149,59 @@ test('paired DMX renders changing ESP master colours after releasing a static ho
   await monitor.syncTablePair(end, true);
   assert.equal(h.port().writes.at(-1), 'STATIC 120\n');
   await monitor.close();
+});
+
+test('music rate advances smooth independent DMX hues without moving static fixtures', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const now = 1000;
+  const states = config.fixtures.slice(0, 2).map(fixture => h.api.createFixtureState(config, fixture, now));
+  states[0].transition = {fromHue: 10, toHue: 130, startedAt: now, durationMs: 30000};
+  states[1].transition = {fromHue: 220, toHue: 340, startedAt: now, durationMs: 30000};
+  const mode = h.api.createModeState(config, now);
+  mode.name = 'individual';
+  const controls = {masterBrightness:255, mode, musicIntent:{brightness:.7,saturation:.96,influence:1,accent:null}};
+  h.api.applyMusicRate(states, mode, now, 44);
+  const initial = h.api.renderUniverse(config, states, now, controls);
+  const later = h.api.renderUniverse(config, states, now + 1000, controls);
+  assert.notDeepEqual([...later], [...initial], 'music must change successive DMX frames');
+  assert.equal(states[0].transition.easing, 'smoothstep');
+  assert.notEqual(h.api.transitionHue(states[0].transition, now + 1000), h.api.transitionHue(states[1].transition, now + 1000));
+  states[1].staticHue = 42;
+  const held = h.api.renderUniverse(config, states, now + 1000, controls);
+  h.api.applyMusicRate(states, mode, now + 2000, 70);
+  const heldLater = h.api.renderUniverse(config, states, now + 2000, controls);
+  const address = states[1].fixture.address - 1;
+  assert.deepEqual([...heldLater.subarray(address, address + 3)], [...held.subarray(address, address + 3)]);
+});
+
+test('music value uses a dedicated dimmer once rather than dimming RGB twice', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const fixture = config.fixtures.find(item => 'brightness' in item.type.channels);
+  const state = h.api.createFixtureState(config, fixture, 0);
+  state.transition = {fromHue: 0, toHue: 0, startedAt: 0, durationMs: 1000};
+  const mode = h.api.createModeState(config, 0);
+  const universe = h.api.renderUniverse(config, [state], 0, {
+    masterBrightness: 255,
+    mode,
+    musicIntent: {brightness:.5,saturation:.96,influence:1,accent:null},
+  });
+  const start = fixture.address - 1;
+  assert.equal(universe[start + fixture.type.channels.red - 1], 255);
+  assert.equal(universe[start + fixture.type.channels.brightness - 1], 128);
+});
+
+test('zero influence and external master ownership prevent music hue driving', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const mode = h.api.createModeState(config, 0);
+  config.music.enabled = true;
+  config.music.influencePercent = 0;
+  assert.equal(h.api.musicCanDriveHue(config, mode, 'READY'), false);
+  config.music.influencePercent = 100;
+  mode.externalControlled = true;
+  assert.equal(h.api.musicCanDriveHue(config, mode, 'READY'), false);
+  mode.externalControlled = false;
+  assert.equal(h.api.musicCanDriveHue(config, mode, 'READY'), true);
 });

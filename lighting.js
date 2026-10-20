@@ -5,6 +5,9 @@ import process from "node:process";
 import { ReadlineParser } from "@serialport/parser-readline";
 import { SerialPort } from "serialport";
 import usb from "usb";
+import { createAudioAnalyser } from "./audio-analysis.js";
+import { PlaybackCoordinator } from "./playback-integration.js";
+import { computeMusicIntent, createMusicIntentState } from "./music-intent.js";
 
 const argumentsList = process.argv.slice(2);
 const diagnosticMode = argumentsList.includes("--diagnose");
@@ -29,6 +32,21 @@ function integer(value, name, min, max) {
 function parseUsbId(value, name) {
   const parsed = typeof value === "string" ? Number.parseInt(value, 0) : value;
   return integer(parsed, name, 0, 0xffff);
+}
+
+function validateMusicConfig(source = {}) {
+  const config = { enabled: false, influencePercent: 100, transitionSpeedPercent: 220,
+    minimumBrightnessPercent: 25, maximumBrightnessPercent: 100, gamma: 1.05, avDelayMs: 0,
+    activationBlendSeconds: 3, dramaticPausesEnabled: true, dramaticPauseMinimumScore: .58, ...source };
+  if (typeof config.enabled !== "boolean" || typeof config.dramaticPausesEnabled !== "boolean") fail("music toggles must be true or false");
+  const ranges = { influencePercent: [0, 100], transitionSpeedPercent: [50, 300], minimumBrightnessPercent: [0, 100],
+    maximumBrightnessPercent: [0, 100], gamma: [.4, 2], avDelayMs: [-500, 1000], activationBlendSeconds: [2, 5], dramaticPauseMinimumScore: [0, 1] };
+  for (const [name, [min, max]] of Object.entries(ranges)) {
+    config[name] = Number(config[name]);
+    if (!Number.isFinite(config[name]) || config[name] < min || config[name] > max) fail(`music.${name} must be from ${min} to ${max}`);
+  }
+  if (config.maximumBrightnessPercent < config.minimumBrightnessPercent) fail("music.maximumBrightnessPercent cannot be less than minimumBrightnessPercent");
+  return config;
 }
 
 function validateConfig(config) {
@@ -118,6 +136,7 @@ function validateConfig(config) {
   if (config.openDmx.serialNumber !== undefined && typeof config.openDmx.serialNumber !== "string") {
     fail("openDmx.serialNumber must be a string");
   }
+  config.music = validateMusicConfig(config.music);
 
   const occupied = new Map();
   const requiredNames = ["red", "green", "blue"];
@@ -224,6 +243,17 @@ function hueToRgb(hue) {
   return values.map(value => Math.round(value * 255));
 }
 
+function hsvToRgb(hue, saturation, value) {
+  const [red, green, blue] = hueToRgb(hue);
+  const minimum = 255 * value * (1 - saturation);
+  return [red, green, blue].map(channel => Math.round(minimum + channel * value * saturation));
+}
+
+function hueMix(from, to, amount) {
+  const distance = ((to - from + 540) % 360) - 180;
+  return (from + distance * amount + 360) % 360;
+}
+
 function transitionTo(fromHue, toHue, durationSeconds, now) {
   const normalizedFromHue = ((fromHue % 360) + 360) % 360;
   const normalizedToHue = ((toHue % 360) + 360) % 360;
@@ -240,7 +270,7 @@ function transitionTo(fromHue, toHue, durationSeconds, now) {
 function newIndividualTransition(config, fromHue, now) {
   return transitionTo(
     fromHue,
-    randomTargetHue(fromHue),
+    randomTargetHue(fromHue, config.music?.enabled && config.music.influencePercent > 0 ? 48 : 20),
     randomBetween(config.transitionSeconds.min, config.transitionSeconds.max),
     now
   );
@@ -251,7 +281,10 @@ function transitionProgress(transition, now) {
 }
 
 function transitionHue(transition, now) {
-  const progress = transitionProgress(transition, now);
+  const rawProgress = transitionProgress(transition, now);
+  const progress = transition.easing === "smoothstep"
+    ? rawProgress * rawProgress * (3 - 2 * rawProgress)
+    : rawProgress;
   return transition.fromHue + (transition.toHue - transition.fromHue) * progress;
 }
 
@@ -435,6 +468,74 @@ function updateMode(config, states, mode, now) {
     `Master target reached; ${mode.masterTransitionsRemaining} transitions remain. ` +
     `Next master target ${target.toFixed(1)} degrees over ${duration.toFixed(1)} seconds.`
   );
+}
+
+function applyMusicRate(states, mode, now, degreesPerSecond) {
+  if (!Number.isFinite(degreesPerSecond) || degreesPerSecond <= 0) return;
+  const leaders = states.filter(state => !isPairFollower(state) && state.staticHue === null);
+  if (mode.name === "master" && leaders.length) {
+    const target = mode.masterTransition.toHue;
+    const firstApplication = leaders.some(state => !state.transition.musicDriven);
+    if (firstApplication) {
+      const snapshots = leaders.map(state => ({ state, hue: transitionHue(state.transition, now) }));
+      const maximumDistance = Math.max(...snapshots.map(({ hue }) => circularHueDistance(hue, target)), 1);
+      const duration = Math.max(.1, maximumDistance / degreesPerSecond);
+      for (const { state, hue } of snapshots) state.transition = {
+        ...transitionTo(hue, target, duration, now), easing: "smoothstep", musicDriven: true
+      };
+      mode.masterTransition = { ...leaders[0].transition };
+      return;
+    }
+    const progress = transitionProgress(mode.masterTransition, now);
+    const maximumDistance = Math.max(...leaders.map(state => Math.abs(state.transition.toHue - state.transition.fromHue)), 1);
+    const durationMs = Math.max(100, maximumDistance / degreesPerSecond * 1000);
+    const startedAt = now - progress * durationMs;
+    mode.masterTransition = { ...mode.masterTransition, durationMs, startedAt, easing: "smoothstep", musicDriven: true };
+    for (const state of leaders) state.transition = { ...state.transition, durationMs, startedAt, easing: "smoothstep", musicDriven: true };
+    return;
+  }
+  for (const state of leaders) {
+    if (!state.transition.musicDriven) {
+      const current = transitionHue(state.transition, now);
+      const distance = circularHueDistance(current, state.transition.toHue);
+      state.transition = { ...transitionTo(current, state.transition.toHue, Math.max(.1, distance / degreesPerSecond), now),
+        easing: "smoothstep", musicDriven: true };
+      continue;
+    }
+    const progress = transitionProgress(state.transition, now);
+    const distance = Math.max(1, Math.abs(state.transition.toHue - state.transition.fromHue));
+    const durationMs = Math.max(100, distance / degreesPerSecond * 1000);
+    state.transition.durationMs = durationMs;
+    state.transition.startedAt = now - progress * durationMs;
+  }
+}
+
+function releaseMusicTransitions(config, states, mode, now) {
+  const leaders = states.filter(state => !isPairFollower(state) && state.staticHue === null && state.transition.musicDriven);
+  if (!leaders.length) return;
+  if (mode.name === "master") {
+    const current = leaders.map(state => transitionHue(state.transition, now));
+    const duration = randomBetween(config.masterMode.transitionSeconds.min, config.masterMode.transitionSeconds.max);
+    leaders.forEach((state, index) => { state.transition = transitionTo(current[index], mode.masterTransition.toHue, duration, now); });
+    mode.masterTransition = transitionTo(current[0], mode.masterTransition.toHue, duration, now);
+  } else {
+    for (const state of leaders) {
+      const current = transitionHue(state.transition, now);
+      state.transition = transitionTo(current, state.transition.toHue,
+        randomBetween(config.transitionSeconds.min, config.transitionSeconds.max), now);
+    }
+  }
+  for (const state of leaders) announceTransition(mode, state, now);
+}
+
+function freezeAutomaticTransitions(states, mode, elapsedMs) {
+  for (const state of states) if (state.staticHue === null) state.transition.startedAt += elapsedMs;
+  mode.masterTransition.startedAt += elapsedMs;
+}
+
+function musicCanDriveHue(config, mode, playbackStatus, releaseAmount = 0) {
+  return config.music.enabled && config.music.influencePercent > 0 && !mode.externalControlled &&
+    (playbackStatus === "READY" || releaseAmount > 0);
 }
 
 function setIndividualMode(config, states, mode, now) {
@@ -690,20 +791,28 @@ function renderUniverse(config, states, now, controls) {
   const universe = Buffer.alloc(config.universeLength, 0);
   for (const state of states) {
     const controllingState = pairLeader(states, state);
-    const hue = controllingState.staticHue ?? transitionHue(controllingState.transition, now);
-    let [red, green, blue] = hueToRgb(hue);
+    let hue = controllingState.staticHue ?? transitionHue(controllingState.transition, now);
+    const music = controllingState.staticHue === null ? controls.musicIntent : null;
+    if (music?.accent) {
+      const fixtureIndex = states.indexOf(state);
+      const accentHue = (music.accent.hue + [-16, -5, 7, 20][fixtureIndex % 4] + 360) % 360;
+      hue = hueMix(hue, accentHue, music.accent.shape * music.influence);
+    }
+    const musicValue = music ? music.brightness : 1;
+    const hasDimmer = "brightness" in state.fixture.type.channels;
+    let [red, green, blue] = hsvToRgb(hue, music ? music.saturation : 1, hasDimmer ? 1 : musicValue);
     const upLevel = lightsUpLevel(controls.mode, now);
     red = Math.round(red + (state.fixture.lightsUpColour.red - red) * upLevel);
     green = Math.round(green + (state.fixture.lightsUpColour.green - green) * upLevel);
     blue = Math.round(blue + (state.fixture.lightsUpColour.blue - blue) * upLevel);
-    const hasDimmer = "brightness" in state.fixture.type.channels;
     if (!hasDimmer) {
       const scale = controls.masterBrightness / 255;
       red = Math.round(red * scale);
       green = Math.round(green * scale);
       blue = Math.round(blue * scale);
     }
-    const values = { red, green, blue, brightness: controls.masterBrightness };
+    const outputValue = musicValue + (1 - musicValue) * upLevel;
+    const values = { red, green, blue, brightness: Math.round(controls.masterBrightness * outputValue) };
     for (const [role, offset] of Object.entries(state.fixture.type.channels)) {
       universe[state.fixture.address + offset - 2] = values[role];
     }
@@ -845,7 +954,16 @@ async function persistLightsUpColours(updates) {
   await writeFile(CONFIG_PATH, `${JSON.stringify(source, null, 2)}\n`, "utf8");
 }
 
-function createWebServer(config, states, mode, controls, externalMaster, transport) {
+async function persistMusicConfig(music) {
+  const source = JSON.parse(await readFile(CONFIG_PATH, "utf8"));
+  source.music = music;
+  await writeFile(CONFIG_PATH, `${JSON.stringify(source, null, 2)}\n`, "utf8");
+}
+
+function createWebServer(config, states, mode, controls, externalMaster, transport, playback = {
+  snapshot: { status: "NO_TRACK", title: null, error: null }, position: () => 0,
+  receive: () => false
+}) {
   const tableLeader = () => externalMaster.tableLeader?.();
   const splitSelection = ids => {
     const hasTable = Array.isArray(ids) && ids.includes(TABLE_LIGHTS_ID);
@@ -910,6 +1028,23 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
           dmx: transport?.status ?? { connected: false, outputs: [] },
           masterBrightness: controls.masterBrightness,
           lightsUp: mode.lightsUp,
+          music: {
+            config: config.music,
+            status: playback.snapshot.status,
+            kind: playback.snapshot.event?.kind ?? null,
+            title: playback.snapshot.title,
+            error: playback.snapshot.error,
+            analysisMs: playback.snapshot.analysisMs ?? null,
+            positionSeconds: playback.position(performance.now(), config.music.avDelayMs),
+            durationSeconds: playback.snapshot.event?.durationSeconds ?? null,
+            intent: controls.musicIntent ? {
+              feature: controls.musicIntent.feature,
+              brightness: controls.musicIntent.brightness,
+              hueRate: controls.musicIntent.hueRate,
+              saturation: controls.musicIntent.saturation,
+              accent: controls.musicIntent.accent
+            } : null
+          },
           externalMaster: {
             connected: mode.externalConnected,
             mode: !mode.externalConnected
@@ -952,6 +1087,20 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
           return false;
         });
         json(response, 200, { up: mode.lightsUp, forwarded });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/playback") {
+        const address = request.socket.remoteAddress;
+        if (address && !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)) fail("Playback events are loopback-only");
+        const accepted = playback.receive(await readJson(request));
+        json(response, 200, { accepted, status: playback.snapshot.status });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/music") {
+        const body = await readJson(request);
+        config.music = validateMusicConfig({ ...config.music, ...body });
+        await persistMusicConfig(config.music);
+        json(response, 200, { music: config.music });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/brightness") {
@@ -1166,6 +1315,8 @@ async function main() {
   let timer;
   let webServer;
   let externalMaster;
+  const analyseAudio = createAudioAnalyser();
+  const playback = new PlaybackCoordinator({ analyse: analyseAudio });
   const stop = async signal => {
     if (stopped) return;
     stopped = true;
@@ -1173,6 +1324,8 @@ async function main() {
     webServer?.close();
     webServer?.closeAllConnections?.();
     await externalMaster?.close();
+    playback.cancel();
+    await analyseAudio.close();
     try {
       const sent = await transport.send(Buffer.alloc(config.universeLength, 0));
       console.log(`\n${signal}: ${sent ? "sent blackout and stopped" : "stopped (no DMX output connected)"}.`);
@@ -1187,19 +1340,51 @@ async function main() {
 
   const states = config.fixtures.map(fixture => createFixtureState(config, fixture, performance.now()));
   const mode = createModeState(config, performance.now());
-  const controls = { masterBrightness: config.masterBrightness, mode };
+  const controls = { masterBrightness: config.masterBrightness, mode, musicIntent: null };
+  const musicState = createMusicIntentState();
   externalMaster = createExternalMasterMonitor(config, states, mode);
-  webServer = createWebServer(config, states, mode, controls, externalMaster, transport);
+  webServer = createWebServer(config, states, mode, controls, externalMaster, transport, playback);
   webServer.listen(config.webPort, "0.0.0.0", () => {
     console.log(`Lighting controls: http://localhost:${config.webPort}`);
   });
   const frameMs = 1000 / config.fps;
   let nextFrame = performance.now();
+  let previousFrame = nextFrame;
+  let musicWasDriving = false;
   const tick = async () => {
     if (stopped) return;
     const now = performance.now();
     try {
+      const musicCanDrive = config.music.enabled && config.music.influencePercent > 0;
+      if (musicCanDrive && playback.snapshot.status === "PAUSED") {
+        freezeAutomaticTransitions(states, mode, Math.max(0, now - previousFrame));
+      }
       updateMode(config, states, mode, now);
+      const musicRelease = playback.snapshot.status === "NO_TRACK"
+        ? playback.release(now, config.music.activationBlendSeconds) : 0;
+      if (musicCanDrive && playback.snapshot.profile && (["READY", "PAUSED"].includes(playback.snapshot.status) || musicRelease > 0)) {
+        const nextIntent = computeMusicIntent(
+          playback.snapshot.profile,
+          playback.position(now, config.music.avDelayMs),
+          config.music,
+          musicState,
+          now / 1000,
+          playback.snapshot.status === "NO_TRACK" ? musicRelease : playback.activation(now, config.music.activationBlendSeconds)
+        );
+        if (nextIntent) {
+          Object.assign(musicState, nextIntent);
+          controls.musicIntent = nextIntent;
+          const canDriveHue = musicCanDriveHue(config, mode, playback.snapshot.status, musicRelease);
+          if (!canDriveHue && musicWasDriving) releaseMusicTransitions(config, states, mode, now);
+          if (canDriveHue) applyMusicRate(states, mode, now, nextIntent.hueRate);
+          musicWasDriving = canDriveHue;
+        }
+      } else if (playback.snapshot.status !== "ANALYSING") {
+        if (musicWasDriving) releaseMusicTransitions(config, states, mode, now);
+        musicWasDriving = false;
+        controls.musicIntent = null;
+        musicState.lastAt = null;
+      }
       await externalMaster.syncTablePair?.(now).catch(error => {
         console.warn(`Could not update paired table lights: ${error.message}`);
       });
@@ -1211,6 +1396,7 @@ async function main() {
       return;
     }
     nextFrame += frameMs;
+    previousFrame = now;
     if (nextFrame < performance.now() - frameMs) nextFrame = performance.now();
     timer = setTimeout(tick, Math.max(0, nextFrame - performance.now()));
   };
