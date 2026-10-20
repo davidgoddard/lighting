@@ -17,6 +17,14 @@ const lightsUpButton = document.querySelector("#lights-up");
 const lightsUpLabel = document.querySelector("#lights-up-label");
 const cortinaColourInput = document.querySelector("#cortina-colour");
 const applyCortinaColourButton = document.querySelector("#apply-cortina-colour");
+const musicInputs = {
+  enabled: document.querySelector("#music-enabled"), influencePercent: document.querySelector("#music-influence"),
+  transitionSpeedPercent: document.querySelector("#music-speed"), minimumBrightnessPercent: document.querySelector("#music-min"),
+  maximumBrightnessPercent: document.querySelector("#music-max"), gamma: document.querySelector("#music-gamma"),
+  avDelayMs: document.querySelector("#music-delay"), dramaticPausesEnabled: document.querySelector("#music-pauses")
+};
+const musicDefaults = { enabled: false, influencePercent: 100, transitionSpeedPercent: 220,
+  minimumBrightnessPercent: 25, maximumBrightnessPercent: 100, gamma: 1.05, avDelayMs: 0, dramaticPausesEnabled: true };
 let fixtures = [];
 let hue = 0;
 let dragging = false;
@@ -25,6 +33,55 @@ let staticUpdateRunning = false;
 let staticUpdatePending = false;
 let brightnessTimer;
 let lightsUp = false;
+let musicSaveTimer;
+
+function renderMusic(music, visibleFixtures = fixtures) {
+  if (!music) return;
+  const labels = { NO_TRACK: "No track", ANALYSING: "Analysing — current lighting held", READY: "Music profile ready", PAUSED: "Playback paused", UNAVAILABLE: "Music analysis unavailable" };
+  const statusLabel = music.kind === "cortina"
+    ? "Cortina override — music response suspended"
+    : labels[music.status] ?? music.status;
+  document.querySelector("#music-status").textContent = `${music.title ?? ""}${music.title ? " · " : ""}${statusLabel}${music.error ? ` · ${music.error}` : ""}`;
+  for (const [name, input] of Object.entries(musicInputs)) {
+    const value = music.config[name]; if (input.type === "checkbox") input.checked = Boolean(value); else input.value = String(value);
+    const output = input.parentElement?.querySelector("output");
+    if (output) output.textContent = name === "gamma" ? Number(value).toFixed(2) : name === "avDelayMs" ? `${value} ms` : `${value}%`;
+  }
+  const feature = music.intent?.feature;
+  document.querySelector("#music-features").textContent = feature
+    ? `Intensity ${Math.round(feature.intensity * 100)}% · fast energy ${Math.round(feature.fastEnergy * 100)}% · activity ${Math.round(feature.fastActivity * 100)}% · drive ${Math.round(feature.drive * 100)}% · ${feature.trend.toLowerCase()}` : "Waiting for analysis";
+  const timing = Number.isFinite(music.positionSeconds) && Number.isFinite(music.durationSeconds)
+    ? ` · ${Math.floor(music.positionSeconds / 60)}:${String(Math.floor(music.positionSeconds % 60)).padStart(2, "0")} / ${Math.floor(music.durationSeconds / 60)}:${String(Math.floor(music.durationSeconds % 60)).padStart(2, "0")}` : "";
+  const analysis = Number.isFinite(music.analysisMs) ? ` · analysed in ${(music.analysisMs / 1000).toFixed(1)}s` : "";
+  document.querySelector("#music-output").textContent = music.intent
+    ? `Value ${Math.round(music.intent.brightness * 100)}% · ${music.intent.hueRate.toFixed(1)}°/s${music.intent.accent ? ` · ${music.intent.accent.phase} accent (${Math.round(music.intent.accent.score * 100)}%)` : ""}${timing}${analysis}`
+    : `Legacy lighting output${timing}${analysis}`;
+  const musicValue = music.intent?.brightness ?? 1;
+  for (const fixture of visibleFixtures) {
+    const card = document.querySelector(`.light[data-id="${CSS.escape(fixture.id)}"]`);
+    const value = fixture.kind !== "bridge" && fixture.mode === "wander" ? musicValue : 1;
+    card?.style.setProperty("--light-value", String(value));
+  }
+}
+
+function scheduleMusicSave() {
+  for (const [name, input] of Object.entries(musicInputs)) {
+    const output = input.parentElement?.querySelector("output");
+    if (output) output.textContent = name === "gamma" ? Number(input.value).toFixed(2) : name === "avDelayMs" ? `${input.value} ms` : `${input.value}%`;
+  }
+  clearTimeout(musicSaveTimer);
+  musicSaveTimer = setTimeout(async () => {
+    const body = Object.fromEntries(Object.entries(musicInputs).map(([name, input]) => [name, input.type === "checkbox" ? input.checked : Number(input.value)]));
+    if (body.minimumBrightnessPercent > body.maximumBrightnessPercent) body.maximumBrightnessPercent = body.minimumBrightnessPercent;
+    try { const result = await post("/api/music", body); renderMusic({ config: result.music, status: "NO_TRACK" }); }
+    catch (error) { document.querySelector("#music-status").textContent = error.message; }
+  }, 120);
+}
+for (const input of Object.values(musicInputs)) input.addEventListener("input", scheduleMusicSave);
+document.querySelector("#music-reset").addEventListener("click", () => {
+  for (const [name, value] of Object.entries(musicDefaults)) { const input = musicInputs[name]; if (input.type === "checkbox") input.checked = value; else input.value = value; }
+  scheduleMusicSave();
+});
 
 function displayLightsUp(up) {
   lightsUp = Boolean(up);
@@ -154,9 +211,18 @@ async function refreshEspStatus() {
   try {
     const response = await fetch("/api/state");
     if (!response.ok) return;
-    const { externalMaster, dmx, fixtures: latest } = await response.json();
+    const latestState = await response.json();
+    const { externalMaster, dmx, fixtures: latest } = latestState;
+    renderMusic(latestState.music, latest);
     renderEspStatus(externalMaster);
     renderDmxStatus(dmx);
+    if (!staticUpdateRunning && !staticUpdatePending && !dragging) {
+      for (const current of latest.filter(fixture => fixture.kind !== "bridge" && fixture.mode === "wander")) {
+        const local = fixtures.find(fixture => fixture.id === current.id);
+        if (local) Object.assign(local, current);
+        startLightTransition(current);
+      }
+    }
     if (!staticUpdateRunning && !staticUpdatePending && !dragging) {
       const previous = fixtures.find(fixture => fixture.kind === "bridge");
       const bridge = latest.find(fixture => fixture.kind === "bridge");
@@ -219,6 +285,7 @@ function renderLights() {
     label.dataset.id = fixture.id;
     label.dataset.mode = fixture.mode;
     label.style.setProperty("--light-colour", `hsl(${fixture.hue} 100% 50%)`);
+    label.style.setProperty("--light-value", "1");
     const modeText = fixture.mode === "static"
       ? "Static"
       : fixture.kind === "bridge" ? "Automatic" : fixture.automaticMode === "master" ? "Master" : "Individual";
@@ -431,6 +498,7 @@ try {
   renderEspStatus(initialState.externalMaster);
   renderDmxStatus(initialState.dmx);
   renderLights();
+  renderMusic(initialState.music, initialState.fixtures);
   for (const fixture of fixtures) {
     if (fixture.mode === "wander") startLightTransition({
       id: fixture.id,

@@ -83,6 +83,23 @@
       </section>
 
     </div>
+    <section class="panel music-panel" aria-labelledby="music-heading">
+      <div class="section-heading">
+        <div><h2 id="music-heading">Music response</h2><p id="music-status" class="muted">No track</p></div>
+        <label class="music-toggle"><input id="music-enabled" type="checkbox"> Enabled</label>
+      </div>
+      <div class="music-controls">
+        <label>Influence <input id="music-influence" type="range" min="0" max="100"><output></output></label>
+        <label>Transition speed <input id="music-speed" type="range" min="50" max="300" step="10"><output></output></label>
+        <label>Minimum brightness <input id="music-min" type="range" min="0" max="100"><output></output></label>
+        <label>Maximum brightness <input id="music-max" type="range" min="0" max="100"><output></output></label>
+        <label>Gamma <input id="music-gamma" type="range" min="0.4" max="2" step="0.05"><output></output></label>
+        <label>AV delay <input id="music-delay" type="range" min="-500" max="1000" step="10"><output></output></label>
+        <label class="music-check"><input id="music-pauses" type="checkbox"> Dramatic pause accents</label>
+      </div>
+      <div class="music-metrics"><span id="music-features">Waiting for analysis</span><span id="music-output">Music disabled</span></div>
+      <button id="music-reset" class="secondary" type="button">Reset defaults</button>
+    </section>
   </main>
   <script type="module" src="/app.js"></script>
 </body>

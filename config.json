@@ -5,7 +5,7 @@
     "max": 40
   },
   "masterMode": {
-    "enabled": true,
+    "enabled": false,
     "transitionCount": {
       "min": 2,
       "max": 6
@@ -29,6 +29,18 @@
   "lightsUp": {
     "fadeUpSeconds": 3,
     "fadeDownSeconds": 3
+  },
+  "music": {
+    "enabled": true,
+    "influencePercent": 100,
+    "transitionSpeedPercent": 300,
+    "minimumBrightnessPercent": 1,
+    "maximumBrightnessPercent": 100,
+    "gamma": 1.05,
+    "avDelayMs": 0,
+    "activationBlendSeconds": 3,
+    "dramaticPausesEnabled": true,
+    "dramaticPauseMinimumScore": 0.58
   },
   "webPort": 8080,
   "usb": {
@@ -184,8 +196,8 @@
       "address": 101,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
+        "red": 255,
+        "green": 255,
         "blue": 255
       }
     },
@@ -206,9 +218,9 @@
       "address": 121,
       "type": "8ch-dimmer-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 227,
+        "green": 251,
+        "blue": 142
       }
     }
   ]
