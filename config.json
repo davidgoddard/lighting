@@ -17,6 +17,14 @@
     "transitionSeconds": {
       "min": 8,
       "max": 25
+    },
+    "entryTransitionSeconds": {
+      "min": 2,
+      "max": 5
+    },
+    "exitTransitionSeconds": {
+      "min": 2,
+      "max": 10
     }
   },
   "externalMaster": {
@@ -38,7 +46,7 @@
     "rhythmicMomentumInfluencePercent": 100,
     "aboveAverageEnergyInfluencePercent": 75,
     "movementRelaxationMs": 2500,
-    "colourStepSpeedPercent": 220,
+    "colourStepSpeedPercent": 147,
     "exceptionalKickThresholdPercent": 90,
     "exceptionalKickColourTimeMs": 800,
     "structureEffectsEnabled": true,

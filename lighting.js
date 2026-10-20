@@ -73,7 +73,9 @@ function validateConfig(config) {
     100
   );
   config.masterMode.transitionSeconds ??= { min: 15, max: 60 };
-  for (const sectionName of ["transitionSeconds"]) {
+  config.masterMode.entryTransitionSeconds ??= { min: 2, max: 5 };
+  config.masterMode.exitTransitionSeconds ??= { min: 2, max: 10 };
+  for (const sectionName of ["transitionSeconds", "entryTransitionSeconds", "exitTransitionSeconds"]) {
     const section = config.masterMode[sectionName];
     section.min = Number(section.min);
     section.max = Number(section.max);
@@ -342,6 +344,7 @@ function createModeState(config, now) {
     name: "individual",
     masterTransition: newMasterTransition(config, initialMasterHue, now),
     masterTransitionsRemaining: 0,
+    masterEntryUntil: null,
     individualUntil: newIndividualModeDeadline(config, now),
     externalConnected: false,
     externalControlled: false,
@@ -406,6 +409,23 @@ function applyMasterTransition(states, mode, masterTransition, now) {
   }
 }
 
+function enterMasterMode(config, states, mode, targetHue, now) {
+  const duration = randomBetween(
+    config.masterMode.entryTransitionSeconds.min,
+    config.masterMode.entryTransitionSeconds.max
+  );
+  const leaders = states.filter(state => !isPairFollower(state) && state.staticHue === null);
+  const representativeHue = leaders.length
+    ? transitionHue(leaders[0].transition, now)
+    : transitionHue(mode.masterTransition, now);
+  mode.name = "master";
+  mode.masterTransition = { ...transitionTo(representativeHue, targetHue, duration, now), easing: "smoothstep" };
+  mode.masterEntryUntil = now + duration * 1000;
+  applyMasterTransition(states, mode, mode.masterTransition, now);
+  for (const state of leaders) state.transition.easing = "smoothstep";
+  return duration;
+}
+
 function updateMode(config, states, mode, now) {
   if (mode.name === "individual") {
     for (const state of states) {
@@ -419,6 +439,16 @@ function updateMode(config, states, mode, now) {
     }
   }
 
+  if (mode.name === "master" && mode.masterEntryUntil !== null) {
+    if (now < mode.masterEntryUntil) return;
+    mode.masterEntryUntil = null;
+    if (mode.externalControlled) return;
+    const completedHue = mode.masterTransition.toHue;
+    mode.masterTransition = newMasterTransition(config, completedHue, now);
+    applyMasterTransition(states, mode, mode.masterTransition, now);
+    return;
+  }
+
   // A connected bridge owns the master/wander decision, but individual
   // wandering above must continue to generate targets while it says "false".
   if (mode.externalControlled) return;
@@ -426,14 +456,13 @@ function updateMode(config, states, mode, now) {
   if (mode.name === "individual") {
     if (!config.masterMode.enabled || now < mode.individualUntil) return;
     const currentMasterHue = transitionHue(mode.masterTransition, now);
-    mode.name = "master";
     mode.masterTransitionsRemaining = randomInteger(
       config.masterMode.transitionCount.min,
       config.masterMode.transitionCount.max
     );
-    mode.masterTransition = newMasterTransition(config, currentMasterHue, now);
-    applyMasterTransition(states, mode, mode.masterTransition, now);
-    console.log(`Entering master mode for ${mode.masterTransitionsRemaining} transitions.`);
+    const targetHue = randomTargetHue(currentMasterHue);
+    const duration = enterMasterMode(config, states, mode, targetHue, now);
+    console.log(`Entering master mode over ${duration.toFixed(1)} seconds for ${mode.masterTransitionsRemaining} transitions.`);
     return;
   }
 
@@ -480,6 +509,7 @@ function applyMusicMotion(config, states, mode, now, intent, pickTarget = random
   const durationSeconds = intent.effectiveTransitionSeconds;
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
   const leaders = states.filter(state => !isPairFollower(state) && state.staticHue === null);
+  if (mode.name === "master" && mode.masterEntryUntil !== null && now < mode.masterEntryUntil) return;
   if (mode.name === "master" && leaders.length) {
     const representative = leaders[0];
     if (!mode.masterTransition.musicDriven) {
@@ -509,6 +539,7 @@ function applyMusicMotion(config, states, mode, now, intent, pickTarget = random
     return;
   }
   for (const state of leaders) {
+    if (state.transition.masterExit && transitionProgress(state.transition, now) < 1) continue;
     if (intent.kick.triggered) {
       const current = transitionHue(state.transition, now);
       const target = pickTarget(current, 100);
@@ -564,10 +595,20 @@ function musicCanDriveHue(config, mode, playbackStatus, releaseAmount = 0) {
 
 function setIndividualMode(config, states, mode, now) {
   mode.name = "individual";
+  mode.masterEntryUntil = null;
   for (const state of states) {
     if (isPairFollower(state)) continue;
     if (state.staticHue !== null) continue;
-    state.transition = newIndividualTransition(config, transitionHue(state.transition, now), now);
+    const current = transitionHue(state.transition, now);
+    const duration = randomBetween(
+      config.masterMode.exitTransitionSeconds.min,
+      config.masterMode.exitTransitionSeconds.max
+    );
+    state.transition = {
+      ...transitionTo(current, randomTargetHue(current, config.music?.enabled ? 45 : 20), duration, now),
+      easing: "smoothstep",
+      masterExit: true
+    };
     announceTransition(mode, state, now);
   }
 }
@@ -580,19 +621,7 @@ function applyExternalMasterMessage(config, states, mode, message, now) {
     return;
   }
 
-  mode.name = "master";
-  mode.masterTransition = transitionTo(message.hue, message.hue, message.durationMs / 1000, now);
-  for (const state of states) {
-    if (isPairFollower(state)) continue;
-    if (state.staticHue !== null) continue;
-    state.transition = transitionTo(
-      transitionHue(state.transition, now),
-      message.hue,
-      message.durationMs / 1000,
-      now
-    );
-    announceTransition(mode, state, now);
-  }
+  if (mode.name !== "master") enterMasterMode(config, states, mode, message.hue, now);
 }
 
 function releaseExternalMaster(config, states, mode, now) {
@@ -600,7 +629,7 @@ function releaseExternalMaster(config, states, mode, now) {
   mode.externalControlled = false;
   mode.externalHasMessage = false;
   mode.masterTransitionsRemaining = 0;
-  setIndividualMode(config, states, mode, now);
+  if (mode.name === "master") setIndividualMode(config, states, mode, now);
   mode.individualUntil = newIndividualModeDeadline(config, now);
   mode.masterTransition = newMasterTransition(config, transitionHue(mode.masterTransition, now), now);
   console.log("External lighting master unavailable; resumed local colour wandering.");

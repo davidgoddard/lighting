@@ -28,7 +28,11 @@ The optional virtual master periodically gathers the automatic fixtures onto a
 shared hue and timing. It completes a random number of shared transitions and
 then returns them to independent wandering. Configure this with `masterMode`.
 Fixtures held at a static colour from the web page are not changed by normal or
-master wandering.
+master wandering. Entry uses a smooth random 2–5 second convergence onto the
+shared hue. On exit, each fixture receives its own random destination and a
+smooth 2–10 second departure; ordinary individual wandering begins only after
+that departure completes. These ranges are configurable as
+`masterMode.entryTransitionSeconds` and `masterMode.exitTransitionSeconds`.
 
 ## Music-aware DMX mode
 
@@ -333,13 +337,16 @@ The bridge and Lighting exchange newline-delimited messages:
 - The bridge can report an ESP-NOW colour target as
   `UDP: hue,durationMilliseconds,brightness,syncMode`.
 
-When `syncMode` is `true`, the bridge has entered master mode: automatic DMX
-fixtures move to the received hue over the supplied duration, and Lighting
-then supplies the shared, music-responsive master destinations back to the
-table-light group with `MASTER` commands. When it is `false`, DMX fixtures and
-table lights use their individual/autonomous wandering behaviour. Merely
-plugging in the bridge does not force master mode: the indicator remains
-**awaiting data** until a valid `UDP:` report arrives.
+When `syncMode` first becomes `true`, the bridge has entered master mode:
+automatic DMX fixtures converge smoothly on the received hue over a random
+2–5 second entry blend, and Lighting supplies that shared destination and
+duration back to the table-light group with a `MASTER` command. Subsequent
+destinations follow the shared, music-responsive master trajectory. When it
+becomes `false`, each DMX fixture departs independently toward a random colour
+over 2–10 seconds before normal wandering continues, while the table lights
+return to their autonomous behaviour. Merely plugging in the bridge does not
+force master mode: the indicator remains **awaiting data** until a valid `UDP:`
+report arrives.
 
 While connected, the bridge owns the master/wander decision, so Lighting's
 timed local virtual-master scheduler is suspended. This authority is not a
