@@ -25,7 +25,7 @@ function harness() {
     ReadlineParser: class {}, validateMusicConfig,
     createServer: callback => { handler = callback; return { once() {} }; }
   });
-  vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode};', context);
+  vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode, setIndividualMode};', context);
   return { api: context.api, port: () => port, request: async (path, body) => {
     const request = Object.assign(Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []), { method: body ? 'POST' : 'GET', url: path });
     let status, result;
@@ -165,6 +165,42 @@ test('music master mode gives every automatic DMX fixture one shared trajectory'
   assert.ok(states.every(state => state.transition.toHue === states[0].transition.toHue));
   h.api.applyMusicMotion(config, states, mode, 2000, intent, () => 260);
   assert.ok(states.every(state => state.transition.progress === states[0].transition.progress));
+});
+
+test('master entry and exit use protected subtle blend periods', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const states = config.fixtures.slice(0, 3).map((fixture, index) => {
+    const state = h.api.createFixtureState(config, fixture, 0);
+    state.transition = {fromHue:index * 80,toHue:index * 80 + 30,startedAt:0,durationMs:10000};
+    return state;
+  });
+  const mode = h.api.createModeState(config, 0);
+  mode.individualUntil = 0;
+  h.api.updateMode(config, states, mode, 1000);
+  assert.equal(mode.name, 'master');
+  assert.ok(mode.masterTransition.durationMs >= 2000 && mode.masterTransition.durationMs <= 5000);
+  assert.equal(mode.masterTransition.easing, 'smoothstep');
+  assert.ok(states.every(state => state.transition.toHue === states[0].transition.toHue));
+  assert.ok(states.every(state => state.transition.easing === 'smoothstep'));
+  const entryTarget = mode.masterTransition.toHue;
+  const intent = {effectiveTransitionSeconds:.5,character:1,structure:{mode:'START'},
+    kick:{triggered:true,retargeted:false,transitionSeconds:.25}};
+  h.api.applyMusicMotion(config, states, mode, 1100, intent, () => 300);
+  assert.equal(mode.masterTransition.toHue, entryTarget, 'music must not replace the entry blend');
+
+  const exitAt = 2000;
+  h.api.setIndividualMode(config, states, mode, exitAt);
+  assert.equal(mode.name, 'individual');
+  for (const state of states) {
+    assert.ok(state.transition.durationMs >= 2000 && state.transition.durationMs <= 10000);
+    assert.equal(state.transition.easing, 'smoothstep');
+    assert.equal(state.transition.masterExit, true);
+  }
+  const exitTargets = states.map(state => state.transition.toHue);
+  h.api.applyMusicMotion(config, states, mode, exitAt + 100, intent, () => 300);
+  assert.deepEqual(states.map(state => state.transition.toHue), exitTargets,
+    'music must not replace independent exit blends');
 });
 
 test('paired DMX renders changing ESP master colours after releasing a static hold', async () => {
