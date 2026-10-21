@@ -6,6 +6,7 @@
 // - USB UDP reports describe automatic colour targets and sync-mode changes.
 // - STATIC <hue> holds the table group (50ms broadcasts, 250ms transitions).
 // - WANDER resumes automatic mode; BRIDGE? reports TABLE JSON state.
+// - MASTER <hue> <duration-ms> drives a rate-limited music master trajectory.
 // - Newline-delimited '1' / '0' retain the existing white override.
 //
 // Target: ESP8266 boards (NodeMCU, Wemos D1 mini, etc.)
@@ -77,6 +78,7 @@ uint8_t broadcastAddress[] = { 255, 255, 255, 255, 255, 255 };
 Neighbour neighbours[MAX_DEVICES];
 
 bool staticOverride = false;
+bool remoteMasterOverride = false;
 float staticHue = 0;
 char serialCommand[64];
 uint8_t serialLength = 0;
@@ -151,7 +153,7 @@ void chooseNewTransition() {
 void sendImMaster() {
   MasterMessage msg = { FRAME_SIG, (uint8_t)IM_MASTER, millis() };
   memcpy(msg.senderMac, myMac, 6);
-  msg.syncMode = staticOverride ? true : syncMode;
+  msg.syncMode = staticOverride || remoteMasterOverride ? true : syncMode;
   msg.colour = staticOverride ? staticHue : masterColour;
   msg.duration = staticOverride ? 250.0f : masterRemainMs; // remaining milliseconds (float to match original)
 
@@ -224,8 +226,10 @@ void printSyncTuple(uint16_t c, uint32_t d, uint8_t b, bool s) {
 void reportTableState() {
   Serial.print(F("TABLE: {\"static\":"));
   Serial.print(staticOverride ? F("true") : F("false"));
+  Serial.print(F(",\"master\":"));
+  Serial.print(remoteMasterOverride ? F("true") : F("false"));
   Serial.print(F(",\"hue\":"));
-  Serial.print(staticHue);
+  Serial.print(remoteMasterOverride ? masterColour : staticHue);
   Serial.println('}');
 }
 
@@ -236,6 +240,7 @@ void handleSerialCommand() {
   else if (strcmp(serialCommand, "BRIDGE?") == 0) reportTableState();
   else if (strcmp(serialCommand, "WANDER") == 0) {
     staticOverride = false;
+    remoteMasterOverride = false;
     syncMode = false;
     nextSyncToggle = millis() + random(SYNC_TOGGLE_MIN_MS, SYNC_TOGGLE_MAX_MS);
     sendImMaster();
@@ -247,6 +252,22 @@ void handleSerialCommand() {
     if (end == serialCommand + 7 || *end != 0 || !isfinite(value) || value < 0 || value >= 360) return;
     staticHue = value;
     staticOverride = true;
+    remoteMasterOverride = false;
+    sendImMaster();
+    lastAnnounce = millis();
+    reportTableState();
+  } else if (strncmp(serialCommand, "MASTER ", 7) == 0) {
+    char *separator;
+    float hue = strtof(serialCommand + 7, &separator);
+    if (separator == serialCommand + 7 || *separator != ' ') return;
+    char *end;
+    float duration = strtof(separator + 1, &end);
+    if (*end != 0 || !isfinite(hue) || hue < 0 || hue >= 360 || !isfinite(duration) || duration < 100 || duration > 90000) return;
+    staticOverride = false;
+    remoteMasterOverride = true;
+    syncMode = true;
+    masterColour = hue;
+    masterRemainMs = duration;
     sendImMaster();
     lastAnnounce = millis();
     reportTableState();
@@ -310,6 +331,9 @@ void loop() {
 
   // Randomly toggle sync/non-sync
   if (now >= nextSyncToggle) {
+    // A host-supplied target follows the bridge's native master session; it
+    // must not suppress the scheduled return to autonomous wandering.
+    remoteMasterOverride = false;
     syncMode = !syncMode;
     nextSyncToggle = now + random(SYNC_TOGGLE_MIN_MS, SYNC_TOGGLE_MAX_MS);
 
@@ -333,9 +357,11 @@ void loop() {
       masterRemainMs -= (float)dt;
     } else {
       // Start a fresh transition once previous finished
-      chooseNewTransition();
-      // USB serial output ONLY on switch: <colour> <duration> <brightness> true
-      printSyncTuple((uint16_t)masterColour, (uint32_t)masterRemainMs, usbBrightness, true);
+      if (!remoteMasterOverride) {
+        chooseNewTransition();
+        // USB serial output ONLY on switch: <colour> <duration> <brightness> true
+        printSyncTuple((uint16_t)masterColour, (uint32_t)masterRemainMs, usbBrightness, true);
+      } else masterRemainMs = 0;
     }
   }
 

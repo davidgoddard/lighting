@@ -1,7 +1,7 @@
 # Tango table lights
 
 This document describes the four `.ino` files under `table-lights`, including
-[the USB bridge](../DMX-bridge/tango_light_3_DMX_bridge.ino). It is an analysis of
+[the USB bridge](../DMX-bridge/tango_light_3_DMX_bridge/tango_light_3_DMX_bridge.ino). It is an analysis of
 the checked-in source, not a record of hardware testing. The sketches target
 **ESP8266**, using `ESP8266WiFi.h` and the older `espnow.h` API; they are not
 ESP32 sketches as supplied.
@@ -26,7 +26,7 @@ constant-current/PWM driver implementation.
 | [`tango_light_3_1m_strip`](tango_light_3_1m_strip/tango_light_3_1m_strip.ino) | Complete wireless light. Gamma-corrected, constant-sum RGB animation; dedicated white-channel sweep, nominally 4 seconds. Local serial `1`/`0` also controls white. |
 | [`tango_light_3_table_white_sweep`](tango_light_3_table_white_sweep/tango_light_3_table_white_sweep.ino) | Complete wireless light. HSL animation with RGB sum limiting; white is mixed from RGB, with a nominal 10-second sweep. Includes abnormal-reset red flashing and serial reset diagnostics. |
 | [`tango_light_3_strip`](tango_light_3_strip/tango_light_3_strip.ino) | Standalone rendering demo. Continuous hue rotation; white-channel sweep code exists, but `lightsUp` stays false because there is no command handler. Wi-Fi headers are included, but there is no ESP-NOW initialisation, reception, or master logic. |
-| [`tango_light_3_DMX_bridge`](../DMX-bridge/tango_light_3_DMX_bridge.ino) | USB serial to ESP-NOW controller, always acting as master. Supports automatic sync/wander, held group hue, and white commands. No LEDs attached or rendered. |
+| [`tango_light_3_DMX_bridge`](../DMX-bridge/tango_light_3_DMX_bridge/tango_light_3_DMX_bridge.ino) | USB serial to ESP-NOW controller, always acting as master. Supports automatic sync/wander, held group hue, and white commands. No LEDs attached or rendered. |
 
 ## LEDs, wiring assumptions and build configuration
 
@@ -47,8 +47,8 @@ RGB strips, discrete high-power LEDs and DMX fixtures have no direct driver here
 Build the light sketches with an ESP8266 Arduino board package and the
 `Adafruit_NeoPixel` library. The bridge needs the ESP8266 package but no NeoPixel
 library. Each sketch should be in an Arduino folder with the same name as its
-`.ino`; the bridge currently needs moving/copying into a
-`tango_light_3_DMX_bridge` folder for that convention. Exact board package and
+`.ino`; the bridge now follows that convention in its
+`tango_light_3_DMX_bridge` subfolder. Exact board package and
 library versions are not pinned. All sketches use serial at **115200 baud**.
 
 There is no runtime hardware configuration: edit constants before uploading.
@@ -234,7 +234,8 @@ are silently ignored.
 | `1` | Broadcast lights up / white, three copies |
 | `0` | Broadcast lights down / return to colour, three copies |
 | `STATIC 120` | Hold the entire table group at hue 120; accepts a finite float in `0 <= hue < 360` |
-| `WANDER` | Clear static override, force automatic non-sync mode, schedule the next sync toggle |
+| `MASTER 120 5000` | Supply a shared hue target and duration (100–90,000 ms); replaces static override |
+| `WANDER` | Clear static and host-master overrides, force automatic non-sync mode, schedule the next sync toggle |
 | `BRIDGE?` | Report current table override state |
 
 `STATIC` broadcasts a fresh 250 ms transition every 50 ms, smoothing the approach
@@ -244,17 +245,22 @@ behaviour. `WANDER` explicitly resets that automatic mode to non-sync. Overrides
 are RAM-only and disappear on reboot. White is an independent state on receivers;
 `STATIC` and `WANDER` do not themselves lower white lights.
 
+`MASTER` uses the normal 200 ms announcement cadence and elapsed-time countdown.
+When its countdown ends, it holds the target until another command or the next
+scheduled sync/wander toggle. That toggle clears the host-master override;
+`MASTER` does not postpone it. Host targets do not emit `UDP:` reports.
+
 ### Bridge reports (bridge to host)
 
 ```text
-TABLE: {"static":true,"hue":120.00}
+TABLE: {"static":true,"master":false,"hue":120.00}
 UDP: 240,15000,1,true
 UDP: 0,0,0,false
 ```
 
-`TABLE:` reports are emitted on startup, `BRIDGE?`, accepted `STATIC`, and `WANDER`.
-They describe the bridge's requested override, not feedback from lamps. When
-`static` is false, `hue` can still contain the previous held hue.
+`TABLE:` reports are emitted on startup, `BRIDGE?`, accepted `STATIC`/`MASTER`, and `WANDER`.
+They describe the bridge's requested override, not feedback from lamps. The `master` flag identifies a host-supplied target, whose hue is reported while
+active. Otherwise `hue` contains the last static hue, even when `static` is false.
 
 `UDP:` is a historical label for a **serial text line**, not a network UDP packet.
 Its fields are `hue,durationMilliseconds,brightness,syncMode`. Reports occur on

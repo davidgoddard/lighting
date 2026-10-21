@@ -1,0 +1,8 @@
+[
+  { "time": 44, "energy": 0.46, "fastEnergy": 0.50, "fastActivity": 0.24, "activity": 0.30, "intensity": 0.43, "drive": 0.37, "development": 0.40, "trend": "RISING" },
+  { "time": 50, "energy": 0.58, "fastEnergy": 0.62, "fastActivity": 0.28, "activity": 0.34, "intensity": 0.55, "drive": 0.25, "development": 0.24, "trend": "RISING" },
+  { "time": 143, "energy": 0.48, "fastEnergy": 0.53, "fastActivity": 0.25, "activity": 0.31, "intensity": 0.45, "drive": 0.35, "development": 0.32, "trend": "RISING" },
+  { "time": 148, "energy": 0.63, "fastEnergy": 0.67, "fastActivity": 0.23, "activity": 0.30, "intensity": 0.59, "drive": 0.23, "development": 0.22, "trend": "RISING" },
+  { "time": 203, "energy": 0.70, "fastEnergy": 0.73, "fastActivity": 0.58, "activity": 0.61, "intensity": 0.68, "drive": 0.61, "development": 0.18, "trend": "RISING" },
+  { "time": 215, "energy": 0.82, "fastEnergy": 0.94, "fastActivity": 0.84, "activity": 0.78, "intensity": 0.76, "drive": 0.77, "development": 0.26, "trend": "RISING" }
+]

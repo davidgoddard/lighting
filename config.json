@@ -17,6 +17,14 @@
     "transitionSeconds": {
       "min": 8,
       "max": 25
+    },
+    "entryTransitionSeconds": {
+      "min": 2,
+      "max": 5
+    },
+    "exitTransitionSeconds": {
+      "min": 2,
+      "max": 10
     }
   },
   "externalMaster": {
@@ -29,6 +37,21 @@
   "lightsUp": {
     "fadeUpSeconds": 3,
     "fadeDownSeconds": 3
+  },
+  "music": {
+    "enabled": true,
+    "minimumBrightnessPercent": 25,
+    "maximumBrightnessPercent": 100,
+    "gamma": 1.05,
+    "rhythmicMomentumInfluencePercent": 100,
+    "aboveAverageEnergyInfluencePercent": 75,
+    "movementRelaxationMs": 2500,
+    "colourStepSpeedPercent": 147,
+    "exceptionalKickThresholdPercent": 90,
+    "exceptionalKickColourTimeMs": 800,
+    "structureEffectsEnabled": true,
+    "avDelayMs": 0,
+    "activationBlendSeconds": 3
   },
   "webPort": 8080,
   "usb": {

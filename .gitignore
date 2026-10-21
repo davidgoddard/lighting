@@ -137,3 +137,6 @@ dist
 
 # Local ESP firmware builds and device backups
 table-lights/DMX-bridge/build/
+
+# macOS Finder metadata
+.DS_Store
