@@ -388,6 +388,19 @@ after changing their integration code or configuration.
 The `/api/lights` endpoint is also available to other local integrations. Send a
 JSON body containing a Boolean `up` property.
 
+## Audio / lighting timing calibration
+
+Use **Open audio / lighting calibration** on the web control page to start a
+gentle click every five seconds. Each click is paired with a full-brightness DMX
+flash on every configured fixture, cycling red, green, and blue. Move the
+delay slider until the flash coincides with the click heard through the DJ audio
+path. The range is 0 to 4 seconds in 1 ms steps and delays the lighting relative
+to the click.
+
+The selected value is saved as `music.avDelayMs` and is therefore also used by
+music-responsive lighting. Stop the click track or leave the calibration page
+to restore normal DMX rendering.
+
 ## Diagnostics and operational help
 
 ### Verify fixture addressing

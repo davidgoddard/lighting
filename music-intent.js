@@ -25,7 +25,7 @@ export function validateMusicConfig(source = {}) {
     minimumBrightnessPercent: [0, 65], maximumBrightnessPercent: [50, 100], gamma: [.4, 2],
     rhythmicMomentumInfluencePercent: [0, 200], aboveAverageEnergyInfluencePercent: [0, 100],
     movementRelaxationMs: [400, 5000], colourStepSpeedPercent: [25, 400],
-    exceptionalKickThresholdPercent: [20, 100], exceptionalKickColourTimeMs: [250, 1400], avDelayMs: [-500, 1000]
+    exceptionalKickThresholdPercent: [20, 100], exceptionalKickColourTimeMs: [250, 1400], avDelayMs: [0, 4000]
   };
   if (typeof config.enabled !== "boolean" || typeof config.structureEffectsEnabled !== "boolean") {
     throw new Error("music toggles must be true or false");

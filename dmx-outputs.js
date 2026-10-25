@@ -26,7 +26,7 @@ export async function createDmxOutputs(factories, { now = () => performance.now(
     }));
   }
   await scan();
-  if (!connected().length) log.warn('No DMX output connected; web and bridge controls remain available. Retrying every 5 seconds.');
+  if (!connected().length) log.warn(`No DMX output connected; web and bridge controls remain available. Retrying every ${retryMs / 1000} seconds.`);
   return {
     get name() { return connected().map(slot => slot.transport.name).join(' + '); },
     get status() { return { connected: connected().length > 0, outputs: connected().map(slot => slot.transport.name) }; },

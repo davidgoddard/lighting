@@ -107,6 +107,7 @@ h2 { margin: 0; font-size: 1rem; letter-spacing: -.01em; }
 .action-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 button.secondary { border: 1px solid #45443e; border-radius: 999px; padding: 10px 16px; color: #eeeae0; background: #292825; font: inherit; font-weight: 650; cursor: pointer; }
 button.secondary:disabled { opacity: .35; cursor: not-allowed; }
+.button-link { display: inline-block; border: 1px solid #45443e; border-radius: 999px; padding: 10px 16px; color: #eeeae0; background: #292825; font: inherit; font-weight: 650; text-decoration: none; }
 #status { color: #89877f; font-size: .8rem; }
 
 @media (max-width: 1340px) {

@@ -356,3 +356,37 @@ test('music hue driving follows playback readiness even while table master mode 
   mode.externalControlled = true;
   assert.equal(h.api.musicCanDriveHue(config, mode, 'READY'), true);
 });
+
+test('calibration pulse overrides every DMX fixture with one full-brightness colour', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const states = config.fixtures.map(fixture => h.api.createFixtureState(config, fixture, 0));
+  const controls = {
+    masterBrightness: 32,
+    mode: h.api.createModeState(config, 0),
+    calibration: {
+      active: true,
+      pulseDurationMs: 120,
+      pulses: [{ at: 1000, colour: { red: 0, green: 255, blue: 0 } }]
+    }
+  };
+  const universe = h.api.renderUniverse(config, states, 1100, controls);
+  for (const state of states) {
+    const start = state.fixture.address - 1;
+    const channels = state.fixture.type.channels;
+    assert.equal(universe[start + channels.red - 1], 0);
+    assert.equal(universe[start + channels.green - 1], 255);
+    assert.equal(universe[start + channels.blue - 1], 0);
+    if (channels.brightness) assert.equal(universe[start + channels.brightness - 1], 255);
+  }
+
+  const blackout = h.api.renderUniverse(config, states, 1300, controls);
+  for (const state of states) {
+    const start = state.fixture.address - 1;
+    const channels = state.fixture.type.channels;
+    assert.equal(blackout[start + channels.red - 1], 0);
+    assert.equal(blackout[start + channels.green - 1], 0);
+    assert.equal(blackout[start + channels.blue - 1], 0);
+    if (channels.brightness) assert.equal(blackout[start + channels.brightness - 1], 0);
+  }
+});

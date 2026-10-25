@@ -914,7 +914,16 @@ function renderUniverse(config, states, now, controls) {
   // Buffer.alloc fills every channel with zero before mapped values are applied.
   const universe = Buffer.alloc(config.universeLength, 0);
   for (const state of states) {
-    const { values } = fixtureOutput(config, states, state, now, controls);
+    const calibration = controls.calibration;
+    const pulse = calibration?.active
+      ? calibration.pulses.find(candidate => now >= candidate.at && now < candidate.at + calibration.pulseDurationMs)
+      : null;
+    const colour = pulse?.colour ?? null;
+    const values = colour
+      ? { ...colour, brightness: 255 }
+      : calibration?.active
+        ? { red: 0, green: 0, blue: 0, brightness: 0 }
+        : fixtureOutput(config, states, state, now, controls).values;
     for (const [role, offset] of Object.entries(state.fixture.type.channels)) {
       universe[state.fixture.address + offset - 2] = values[role];
     }
@@ -1026,7 +1035,7 @@ async function createTransport(config) {
   return createDmxOutputs([
     () => createUdmxTransport(config),
     ...(config.openDmx.enabled ? [() => createOpenDmxTransport(config)] : [])
-  ]);
+  ], { retryMs: 500 });
 }
 
 function json(response, status, value) {
@@ -1068,6 +1077,7 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
 }) {
   controls.mode ??= mode;
   controls.masterBrightness ??= config.masterBrightness;
+  controls.calibration ??= { active: false, pulseDurationMs: 120, pulses: [], sequence: 0 };
   const tableLeader = () => externalMaster.tableLeader?.();
   const splitSelection = ids => {
     const hasTable = Array.isArray(ids) && ids.includes(TABLE_LIGHTS_ID);
@@ -1101,7 +1111,10 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
   const assets = new Map([
     ["/", ["index.html", "text/html; charset=utf-8"]],
     ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
-    ["/style.css", ["style.css", "text/css; charset=utf-8"]]
+    ["/style.css", ["style.css", "text/css; charset=utf-8"]],
+    ["/calibrate", ["calibrate.html", "text/html; charset=utf-8"]],
+    ["/calibrate.js", ["calibrate.js", "text/javascript; charset=utf-8"]],
+    ["/calibrate.css", ["calibrate.css", "text/css; charset=utf-8"]]
   ]);
   const server = createServer(async (request, response) => {
     try {
@@ -1136,6 +1149,7 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
         json(response, 200, {
           dmx: transport?.status ?? { connected: false, outputs: [] },
           masterBrightness: controls.masterBrightness,
+          calibration: { active: controls.calibration.active, delayMs: config.music.avDelayMs },
           lightsUp: mode.lightsUp,
           music: {
             config: config.music,
@@ -1227,6 +1241,34 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
         config.music = validateMusicConfig({ ...config.music, ...body });
         await persistMusicConfig(config.music);
         json(response, 200, { music: config.music });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/calibration") {
+        const body = await readJson(request);
+        if (typeof body.active !== "boolean") fail("active must be true or false");
+        controls.calibration.active = body.active;
+        controls.calibration.pulses = [];
+        json(response, 200, { active: controls.calibration.active, delayMs: config.music.avDelayMs });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/calibration/pulse") {
+        const body = await readJson(request);
+        if (!controls.calibration.active) fail("Calibration is not active");
+        const leadMs = Number(body.leadMs);
+        if (!Number.isFinite(leadMs) || leadMs < 0 || leadMs > 1000) fail("leadMs must be from 0 to 1000");
+        const delayMs = Number(body.delayMs);
+        if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 4000) fail("delayMs must be from 0 to 4000");
+        const colours = [
+          { red: 255, green: 0, blue: 0 },
+          { red: 0, green: 255, blue: 0 },
+          { red: 0, green: 0, blue: 255 }
+        ];
+        const colour = colours[controls.calibration.sequence % colours.length];
+        controls.calibration.sequence += 1;
+        const now = performance.now();
+        controls.calibration.pulses = controls.calibration.pulses.filter(pulse => pulse.at + controls.calibration.pulseDurationMs > now);
+        controls.calibration.pulses.push({ at: now + leadMs + delayMs, colour });
+        json(response, 200, { sequence: controls.calibration.sequence, delayMs });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/brightness") {
@@ -1359,7 +1401,7 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
       const asset = assets.get(url.pathname);
       if (request.method === "GET" && asset) {
         const [file, contentType] = asset;
-        response.writeHead(200, { "content-type": contentType });
+        response.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
         response.end(await readFile(new URL(`./public/${file}`, import.meta.url)));
         return;
       }

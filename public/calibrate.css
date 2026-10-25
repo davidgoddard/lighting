@@ -1,0 +1,15 @@
+.calibration-page { display: grid; min-height: 100vh; align-content: center; width: min(760px, calc(100% - 28px)); }
+.back-link { width: fit-content; margin-bottom: 14px; color: #bbb8af; text-decoration: none; }
+.calibration-panel { padding: clamp(24px, 6vw, 54px); text-align: center; }
+.calibration-panel .intro { margin: 14px auto 38px; }
+.delay-readout { display: grid; gap: 7px; margin-bottom: 24px; }
+#delay-value { color: #f4f2eb; font: 700 clamp(2.7rem, 10vw, 5rem)/1 ui-monospace, monospace; letter-spacing: -.08em; }
+#delay-direction { color: #aaa79e; font-size: .85rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
+.slider-wrap { margin: 0 auto 38px; }
+#delay { width: 100%; accent-color: #f4f2eb; cursor: pointer; }
+.scale { display: flex; justify-content: space-between; color: #85837c; font: .76rem ui-monospace, monospace; }
+.calibration-toggle { min-width: 220px; border: 1px solid #eeeae0; border-radius: 999px; padding: 14px 24px; color: #171715; background: #eeeae0; font: inherit; font-weight: 750; cursor: pointer; }
+.calibration-toggle[data-running="true"] { color: #fff; border-color: #8b3939; background: #6f2929; }
+.calibration-toggle:disabled { opacity: .55; cursor: wait; }
+.calibration-panel #status { min-height: 1.4em; margin-top: 14px; }
+.note { max-width: 34rem; margin: 32px auto 0; color: #77756e; font-size: .78rem; line-height: 1.5; }

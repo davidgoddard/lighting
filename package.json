@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node lighting.js",
-    "check": "node --check lighting.js && node --check dmx-outputs.js && node --check public/app.js",
+    "check": "node --check lighting.js && node --check dmx-outputs.js && node --check public/app.js && node --check public/calibrate.js",
     "test": "node --test tests/*.test.mjs"
   },
   "engines": {

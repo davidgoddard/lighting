@@ -98,11 +98,12 @@
         <label>Colour step speed <input id="music-speed" type="range" min="25" max="400"><output></output></label>
         <label>Exceptional kick threshold <input id="music-kick-threshold" type="range" min="20" max="100"><output></output></label>
         <label>Exceptional kick colour time <input id="music-kick-time" type="range" min="250" max="1400" step="50"><output></output></label>
-        <label>AV delay <input id="music-delay" type="range" min="-500" max="1000" step="10"><output></output></label>
+        <label>AV delay <input id="music-delay" type="range" min="0" max="4000" step="1"><output></output></label>
         <label class="music-check"><input id="music-structure" type="checkbox"> Structure effects</label>
       </div>
       <div class="music-metrics"><span id="music-features">Waiting for analysis</span><span id="music-output">Music disabled</span></div>
       <button id="music-reset" class="secondary" type="button">Reset defaults</button>
+      <a class="secondary button-link" href="/calibrate">Open audio / lighting calibration</a>
     </section>
   </main>
   <script type="module" src="/app.js"></script>

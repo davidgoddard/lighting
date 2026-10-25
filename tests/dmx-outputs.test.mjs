@@ -55,6 +55,24 @@ test('offline startup recovers; a healthy mirrored output keeps receiving frames
   await outputs.close();
 });
 
+test('a late-enumerating adapter is found during the fast startup retry window', async () => {
+  let now = 0, online = false, opens = 0;
+  const outputs = await createDmxOutputs([async () => {
+    opens++;
+    return online ? {name:'uDMX', send:async () => {}, close:async () => {}} : null;
+  }], {now:() => now, retryMs:500, log});
+  assert.equal(outputs.status.connected, false);
+  online = true;
+  now = 499;
+  await outputs.send(Buffer.alloc(1));
+  assert.equal(opens, 1);
+  now = 500;
+  await outputs.send(Buffer.alloc(1));
+  assert.equal(outputs.status.connected, true);
+  assert.equal(opens, 2);
+  await outputs.close();
+});
+
 test('shutdown waits for an in-flight transfer before closing hardware', async () => {
   let finish, started;
   const entered = new Promise(resolve => { started = resolve; });
