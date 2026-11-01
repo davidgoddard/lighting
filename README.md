@@ -548,3 +548,7 @@ compiled binary. Only upload to the bridge, not the table lights.
 Run `node --test tests/bridge.test.mjs` to check serial capability detection,
 static/wander commands, invalid selection handling, and disconnection without
 opening real hardware.
+
+### ESP32-C3 combined table-light and DMX bridge
+
+See [firmware, wiring and setup instructions](table-lights/DMX-bridge/README-esp32-c3.md) for the combined ESP-NOW and USB DMX bridge. Its wired and wireless outputs mirror the same universe, alongside any connected uDMX adapter.

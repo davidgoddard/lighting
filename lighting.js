@@ -1,3 +1,4 @@
+import { encodeBridgeDmx } from "./bridge-dmx.js";
 import { createDmxOutputs } from "./dmx-outputs.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -669,6 +670,7 @@ function createExternalMasterMonitor(config, states, mode) {
   let stopped = false;
   let port = null;
   let scanTimer = null;
+  let handshakeTimer = null;
   const wantedVendorId = config.externalMaster.vendorId.toString(16).padStart(4, "0");
 
   const scheduleScan = () => {
@@ -684,13 +686,16 @@ function createExternalMasterMonitor(config, states, mode) {
     if (stopped || port) return;
     try {
       const ports = await SerialPort.list();
+      if (stopped) return;
       const unidentifiedUsbSerial = ports.filter(candidate => !candidate.vendorId &&
         /^\/dev\/(?:tty|cu)\.(?:usbserial|wchusbserial|usbmodem)/i.test(candidate.path) &&
         candidate.path !== config.openDmx.path);
-      const match = (config.externalMaster.path
-        ? ports.find(candidate => candidate.path === config.externalMaster.path) : null)
-        ?? ports.find(candidate => candidate.vendorId?.toLowerCase() === wantedVendorId)
-        ?? (unidentifiedUsbSerial.length === 1 ? unidentifiedUsbSerial[0] : null);
+      const eligible = ports.filter(candidate => candidate.path !== config.openDmx.path);
+      const match = config.externalMaster.path
+        ? eligible.find(candidate => candidate.path === config.externalMaster.path)
+        : eligible.find(candidate => candidate.vendorId?.toLowerCase() === "303a")
+          ?? eligible.find(candidate => candidate.vendorId?.toLowerCase() === wantedVendorId)
+          ?? (unidentifiedUsbSerial.length === 1 ? unidentifiedUsbSerial[0] : null);
       if (!match) {
         scheduleScan();
         return;
@@ -710,6 +715,7 @@ function createExternalMasterMonitor(config, states, mode) {
             const report = JSON.parse(line.slice(7));
             if (typeof report.static === "boolean" && Number.isFinite(report.hue) && report.hue >= 0 && report.hue < 360) {
               tableState = report;
+              clearInterval(handshakeTimer);
               if (!report.static) lastFollowHue = null;
             }
           } catch { /* Ignore incomplete or malformed reports. */ }
@@ -738,7 +744,10 @@ function createExternalMasterMonitor(config, states, mode) {
       });
       candidate.once("close", () => {
         if (port === candidate) port = null;
+        clearInterval(handshakeTimer);
         tableState = null;
+        musicMaster = null;
+        lastMusicCommandAt = -Infinity;
         lastFollowHue = null;
         mode.externalConnected = false;
         mode.externalHasMessage = false;
@@ -757,6 +766,7 @@ function createExternalMasterMonitor(config, states, mode) {
           scheduleScan();
           return;
         }
+        if (stopped) { candidate.close(() => {}); return; }
         mode.externalConnected = true;
         mode.externalControlled = true;
         mode.externalHasMessage = false;
@@ -765,9 +775,11 @@ function createExternalMasterMonitor(config, states, mode) {
         if (mode.name !== "individual") {
           setIndividualMode(config, states, mode, performance.now());
         }
-        candidate.write("BRIDGE?\n", error => {
+        const handshake = () => candidate.write("BRIDGE?\n", error => {
           if (error) console.warn(`Bridge handshake failed: ${error.message}`);
         });
+        handshake();
+        if (!tableState) handshakeTimer = setInterval(handshake, 1000);
         console.log(`Listening for the external lighting master on ${match.path} at ${config.externalMaster.baudRate} baud.`);
       });
     } catch (error) {
@@ -784,7 +796,7 @@ function createExternalMasterMonitor(config, states, mode) {
     const connection = port;
     if (!connection?.isOpen || !tableState) fail("Table lights bridge is unavailable or needs updated firmware");
     await serialAction(done => connection.write(hue === null ? "WANDER\n" : `STATIC ${hue}\n`, done));
-    if (port === connection && tableState) tableState = { static: hue !== null, hue: hue ?? tableState.hue };
+    if (port === connection && tableState) tableState = { ...tableState, static: hue !== null, hue: hue ?? tableState.hue };
   };
   const syncTablePair = async (now = performance.now(), force = false) => {
     if (musicMaster) return;
@@ -799,6 +811,21 @@ function createExternalMasterMonitor(config, states, mode) {
   };
   void scan();
   return {
+    openDmxTransport: () => {
+      const connection = port;
+      if (!connection?.isOpen || tableState?.dmxProtocol !== 1) return null;
+      return {
+        name: `ESP32-C3 DMX ${connection.path}`,
+        send: async universe => {
+          if (port !== connection || !connection.isOpen || tableState?.dmxProtocol !== 1) {
+            throw new Error("Bridge disconnected or DMX handshake unavailable");
+          }
+          // One write per complete packet: serialport orders this with text commands.
+          await serialAction(done => connection.write(encodeBridgeDmx(universe), done));
+        },
+        close: async () => {} // The monitor owns this shared connection.
+      };
+    },
     tableLeader,
     syncTablePair,
     syncMusicMaster: async (transition, intent = null, now = performance.now()) => {
@@ -871,6 +898,7 @@ function createExternalMasterMonitor(config, states, mode) {
     close: async () => {
       stopped = true;
       clearTimeout(scanTimer);
+      clearInterval(handshakeTimer);
       if (mode.tablePairLeaderId && port?.isOpen && tableState) {
         await setTableColour(null).catch(error => console.warn(`Could not release table lights: ${error.message}`));
       }
@@ -1031,9 +1059,10 @@ async function createOpenDmxTransport(config) {
   };
 }
 
-async function createTransport(config) {
+async function createTransport(config, externalMaster) {
   return createDmxOutputs([
     () => createUdmxTransport(config),
+    () => externalMaster?.openDmxTransport?.(),
     ...(config.openDmx.enabled ? [() => createOpenDmxTransport(config)] : [])
   ], { retryMs: 500 });
 }
@@ -1463,18 +1492,26 @@ async function runDiagnostics(config, transport) {
 
 async function main() {
   const config = validateConfig(JSON.parse(await readFile(CONFIG_PATH, "utf8")));
-  const transport = await createTransport(config);
+  const states = config.fixtures.map(fixture => createFixtureState(config, fixture, performance.now()));
+  const mode = createModeState(config, performance.now());
+  const externalMaster = createExternalMasterMonitor(config, states, mode);
+  const transport = await createTransport(config, externalMaster);
   console.log(
     `Lighting controller ready; ${config.fixtures.length} fixtures at ${config.fps} FPS.`
   );
 
   if (diagnosticMode) {
     try {
+      for (let attempt = 0; !transport.status.connected && attempt < 20; attempt++) {
+        await wait(250);
+        await transport.send(Buffer.alloc(config.universeLength));
+      }
       if (!transport.status.connected) fail("Diagnostics require a connected DMX output");
       await runDiagnostics(config, transport);
     } finally {
       await transport.send(Buffer.alloc(config.universeLength, 0));
       await transport.close();
+      await externalMaster.close();
     }
     return;
   }
@@ -1482,7 +1519,6 @@ async function main() {
   let stopped = false;
   let timer;
   let webServer;
-  let externalMaster;
   const analyseAudio = createAudioAnalyser();
   const playback = new PlaybackCoordinator({ analyse: analyseAudio });
   const stop = async signal => {
@@ -1491,7 +1527,6 @@ async function main() {
     clearTimeout(timer);
     webServer?.close();
     webServer?.closeAllConnections?.();
-    await externalMaster?.close();
     playback.cancel();
     await analyseAudio.close();
     try {
@@ -1501,16 +1536,14 @@ async function main() {
       console.error(`\n${signal}: could not send blackout: ${error.message}`);
     } finally {
       await transport.close();
+      await externalMaster.close();
     }
   };
   process.once("SIGINT", () => void stop("SIGINT"));
   process.once("SIGTERM", () => void stop("SIGTERM"));
 
-  const states = config.fixtures.map(fixture => createFixtureState(config, fixture, performance.now()));
-  const mode = createModeState(config, performance.now());
   const controls = { masterBrightness: config.masterBrightness, mode, musicIntent: null };
   const musicState = createMusicIntentState();
-  externalMaster = createExternalMasterMonitor(config, states, mode);
   webServer = createWebServer(config, states, mode, controls, externalMaster, transport, playback);
   webServer.listen(config.webPort, "0.0.0.0", () => {
     console.log(`Lighting controls: http://localhost:${config.webPort}`);

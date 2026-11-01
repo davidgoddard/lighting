@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { encodeBridgeDmx } from '../bridge-dmx.js';
 import { validateMusicConfig } from '../music-intent.js';
 
 // Exercise the real server and serial monitor with hardware replaced at their boundaries.
@@ -22,7 +23,7 @@ function harness() {
   const context = vm.createContext({
     process: { argv: [], cwd: () => '/tmp' }, URL, Buffer, performance, console,
     setTimeout, clearTimeout, setInterval, clearInterval, SerialPort,
-    ReadlineParser: class {}, validateMusicConfig,
+    ReadlineParser: class {}, validateMusicConfig, encodeBridgeDmx,
     createServer: callback => { handler = callback; return { once() {} }; }
   });
   vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode, setIndividualMode};', context);
@@ -162,7 +163,7 @@ test('music master mode gives every automatic DMX fixture one shared trajectory'
   const mode = h.api.createModeState(config, 0); mode.name = 'master';
   const intent = {effectiveTransitionSeconds:8,character:.4,structure:{mode:'NORMAL'},kick:{triggered:false}};
   h.api.applyMusicMotion(config, states, mode, 1000, intent, () => 160);
-  assert.ok(states.every(state => state.transition.toHue === states[0].transition.toHue));
+  assert.ok(states.every(state => Math.abs(((state.transition.toHue - states[0].transition.toHue) % 360 + 540) % 360 - 180) < 1e-9));
   h.api.applyMusicMotion(config, states, mode, 2000, intent, () => 260);
   assert.ok(states.every(state => state.transition.progress === states[0].transition.progress));
 });
@@ -181,7 +182,7 @@ test('master entry and exit use protected subtle blend periods', () => {
   assert.equal(mode.name, 'master');
   assert.ok(mode.masterTransition.durationMs >= 2000 && mode.masterTransition.durationMs <= 5000);
   assert.equal(mode.masterTransition.easing, 'smoothstep');
-  assert.ok(states.every(state => state.transition.toHue === states[0].transition.toHue));
+  assert.ok(states.every(state => Math.abs(((state.transition.toHue - states[0].transition.toHue) % 360 + 540) % 360 - 180) < 1e-9));
   assert.ok(states.every(state => state.transition.easing === 'smoothstep'));
   const entryTarget = mode.masterTransition.toHue;
   const intent = {effectiveTransitionSeconds:.5,character:1,structure:{mode:'START'},
@@ -389,4 +390,27 @@ test('calibration pulse overrides every DMX fixture with one full-brightness col
     assert.equal(blackout[start + channels.blue - 1], 0);
     if (channels.brightness) assert.equal(blackout[start + channels.brightness - 1], 0);
   }
+});
+
+
+test('combined bridge shares USB for DMX and table control, gates legacy firmware, and rejects stale connections', async () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const monitor = h.api.createExternalMasterMonitor(config, [], h.api.createModeState(config, 0));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(monitor.openDmxTransport(), null);
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0}');
+  assert.equal(monitor.openDmxTransport(), null);
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0,"dmxProtocol":1}');
+  const output = monitor.openDmxTransport();
+  await output.send(Buffer.from([255, 165, 90, 10]));
+  assert.deepEqual(h.port().writes.at(-1), encodeBridgeDmx(Buffer.from([255, 165, 90, 10])));
+  await monitor.setTableColour(120);
+  await output.send(Buffer.from([50]));
+  assert.equal(h.port().writes.at(-2), 'STATIC 120\n');
+  await output.close();
+  assert.ok(h.port().isOpen, 'output wrapper must not close the shared port');
+  await monitor.close();
+  await assert.rejects(output.send(Buffer.alloc(512)), /disconnected/);
+  assert.equal(monitor.openDmxTransport(), null);
 });
