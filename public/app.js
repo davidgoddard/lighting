@@ -19,18 +19,16 @@ const cortinaColourInput = document.querySelector("#cortina-colour");
 const applyCortinaColourButton = document.querySelector("#apply-cortina-colour");
 const musicInputs = {
   enabled: document.querySelector("#music-enabled"), minimumBrightnessPercent: document.querySelector("#music-min"),
-  maximumBrightnessPercent: document.querySelector("#music-max"), gamma: document.querySelector("#music-gamma"),
-  rhythmicMomentumInfluencePercent: document.querySelector("#music-rhythm"),
-  aboveAverageEnergyInfluencePercent: document.querySelector("#music-energy"),
-  movementRelaxationMs: document.querySelector("#music-relaxation"), colourStepSpeedPercent: document.querySelector("#music-speed"),
-  exceptionalKickThresholdPercent: document.querySelector("#music-kick-threshold"),
-  exceptionalKickColourTimeMs: document.querySelector("#music-kick-time"),
-  avDelayMs: document.querySelector("#music-delay"), structureEffectsEnabled: document.querySelector("#music-structure")
+  maximumBrightnessPercent: document.querySelector("#music-max"),
+  tangoColourChangeSensitivity: document.querySelector("#music-change-sensitivity"),
+  tangoAccentFallbackDelaySeconds: document.querySelector("#music-accent-delay"),
+  tangoEventSensitivity: document.querySelector("#music-event-sensitivity"),
+  tangoEventMinimumSpacingSeconds: document.querySelector("#music-event-spacing"),
+  avDelayMs: document.querySelector("#music-delay")
 };
-const musicDefaults = { enabled: false, minimumBrightnessPercent: 25, maximumBrightnessPercent: 100, gamma: 1.05,
-  rhythmicMomentumInfluencePercent: 100, aboveAverageEnergyInfluencePercent: 75, movementRelaxationMs: 2500,
-  colourStepSpeedPercent: 220, exceptionalKickThresholdPercent: 90, exceptionalKickColourTimeMs: 650,
-  avDelayMs: 0, structureEffectsEnabled: true };
+const musicDefaults = { enabled: false, minimumBrightnessPercent: 62, maximumBrightnessPercent: 100,
+  tangoColourChangeSensitivity: .45, tangoAccentFallbackDelaySeconds: 1,
+  tangoEventSensitivity: .49, tangoEventMinimumSpacingSeconds: 3, avDelayMs: 0 };
 let fixtures = [];
 let hue = 0;
 let dragging = false;
@@ -51,33 +49,42 @@ function renderMusic(music) {
   for (const [name, input] of Object.entries(musicInputs)) {
     const value = music.config[name]; if (input.type === "checkbox") input.checked = Boolean(value); else input.value = String(value);
     const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = name === "gamma" ? Number(value).toFixed(2)
-      : ["avDelayMs", "movementRelaxationMs", "exceptionalKickColourTimeMs"].includes(name) ? `${value} ms` : `${value}%`;
+    if (output) output.textContent = name.endsWith("Seconds") ? `${value} s`
+      : name === "avDelayMs" ? `${value} ms`
+        : ["tangoColourChangeSensitivity","tangoEventSensitivity"].includes(name) ? Number(value).toFixed(2) : `${value}%`;
   }
-  const feature = music.intent?.feature;
+  const feature = music.director?.feature ?? music.intent?.feature;
   document.querySelector("#music-features").textContent = feature
-    ? `Energy ${Math.round(feature.fastEnergy * 100)}% · phrase ${Math.round(feature.phrase * 100)}% · development ${Math.round(feature.development * 100)}% · momentum ${Math.round(feature.rhythm.momentum * 100)}%` : "Waiting for analysis";
+    ? music.director
+      ? `Change: rhythm ${Math.round(feature.rhythm*100)}% · dynamics ${Math.round(feature.dynamics*100)}% · harmony ${Math.round(feature.harmony*100)}% · texture ${Math.round(feature.timbre*100)}% · accent ${Math.round(feature.accent*100)}%`
+      : `Energy ${Math.round(feature.fastEnergy * 100)}% · phrase ${Math.round(feature.phrase * 100)}% · development ${Math.round(feature.development * 100)}% · momentum ${Math.round(feature.rhythm.momentum * 100)}%`
+    : "Waiting for analysis";
   const timing = Number.isFinite(music.positionSeconds) && Number.isFinite(music.durationSeconds)
     ? ` · ${Math.floor(music.positionSeconds / 60)}:${String(Math.floor(music.positionSeconds % 60)).padStart(2, "0")} / ${Math.floor(music.durationSeconds / 60)}:${String(Math.floor(music.durationSeconds % 60)).padStart(2, "0")}` : "";
   const analysis = Number.isFinite(music.analysisMs) ? ` · analysed in ${(music.analysisMs / 1000).toFixed(1)}s` : "";
-  document.querySelector("#music-output").textContent = music.intent
+  document.querySelector("#music-output").textContent = music.director
+    ? `Brightness ${Math.round(music.director.brightness * 100)}% · colour ×${music.director.colourAcceleration.toFixed(1)}` +
+      ` · ${music.director.cue ?? "Wandering"} · ${music.director.colourCueCount ?? 0} colour changes` +
+      ` · ${music.director.activityDropCount ?? 0} activity drops${timing}${analysis}`
+    : music.intent
     ? `Value ${Math.round(music.intent.brightness * 100)}% · character ${Math.round(music.intent.character * 100)}%` +
       ` · ${music.intent.stepRate.toFixed(2)} colour steps/s · ${music.intent.structure.mode}` +
       `${music.intent.kick?.triggered ? " · exceptional kick" : ""}${timing}${analysis}`
-    : `Legacy lighting output${timing}${analysis}`;
+    : `Background lighting${timing}${analysis}`;
 }
 
 function scheduleMusicSave() {
   for (const [name, input] of Object.entries(musicInputs)) {
     const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = name === "gamma" ? Number(input.value).toFixed(2)
-      : ["avDelayMs", "movementRelaxationMs", "exceptionalKickColourTimeMs"].includes(name) ? `${input.value} ms` : `${input.value}%`;
+    if (output) output.textContent = name.endsWith("Seconds") ? `${input.value} s`
+      : name === "avDelayMs" ? `${input.value} ms`
+        : ["tangoColourChangeSensitivity","tangoEventSensitivity"].includes(name) ? Number(input.value).toFixed(2) : `${input.value}%`;
   }
   clearTimeout(musicSaveTimer);
   musicSaveTimer = setTimeout(async () => {
     const body = Object.fromEntries(Object.entries(musicInputs).map(([name, input]) => [name, input.type === "checkbox" ? input.checked : Number(input.value)]));
     if (body.minimumBrightnessPercent > body.maximumBrightnessPercent) body.maximumBrightnessPercent = body.minimumBrightnessPercent;
-    try { const result = await post("/api/music", body); renderMusic({ config: result.music, status: "NO_TRACK" }); }
+    try { const result = await post("/api/music", body); renderMusic({ config: result.music, status: result.status ?? "NO_TRACK" }); }
     catch (error) { document.querySelector("#music-status").textContent = error.message; }
   }, 120);
 }

@@ -15,6 +15,10 @@ export const DEFAULT_MUSIC_CONFIG = Object.freeze({
   colourStepSpeedPercent: 220,
   exceptionalKickThresholdPercent: 90,
   exceptionalKickColourTimeMs: 650,
+  tangoColourChangeSensitivity: .45,
+  tangoAccentFallbackDelaySeconds: 1,
+  tangoEventSensitivity: .49,
+  tangoEventMinimumSpacingSeconds: 3,
   structureEffectsEnabled: true,
   avDelayMs: 0
 });
@@ -22,10 +26,12 @@ export const DEFAULT_MUSIC_CONFIG = Object.freeze({
 export function validateMusicConfig(source = {}) {
   const config = { ...DEFAULT_MUSIC_CONFIG, ...source };
   const ranges = {
-    minimumBrightnessPercent: [0, 65], maximumBrightnessPercent: [50, 100], gamma: [.4, 2],
+    minimumBrightnessPercent: [0, 100], maximumBrightnessPercent: [50, 100], gamma: [.4, 2],
     rhythmicMomentumInfluencePercent: [0, 200], aboveAverageEnergyInfluencePercent: [0, 100],
     movementRelaxationMs: [400, 5000], colourStepSpeedPercent: [25, 400],
-    exceptionalKickThresholdPercent: [20, 100], exceptionalKickColourTimeMs: [250, 1400], avDelayMs: [0, 4000]
+    exceptionalKickThresholdPercent: [20, 100], exceptionalKickColourTimeMs: [250, 1400],
+    tangoColourChangeSensitivity: [.2, .95], tangoAccentFallbackDelaySeconds: [0, 20],
+    tangoEventSensitivity: [.25, .9], tangoEventMinimumSpacingSeconds: [1, 15], avDelayMs: [0, 4000]
   };
   if (typeof config.enabled !== "boolean" || typeof config.structureEffectsEnabled !== "boolean") {
     throw new Error("music toggles must be true or false");

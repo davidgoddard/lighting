@@ -1,4 +1,5 @@
 import { createDmxOutputs } from "./dmx-outputs.js";
+import { encodeBridgeDmx } from "./bridge-dmx.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import process from "node:process";
@@ -7,10 +8,13 @@ import { SerialPort } from "serialport";
 import usb from "usb";
 import { createAudioAnalyser } from "./audio-analysis.js";
 import { PlaybackCoordinator } from "./playback-integration.js";
+// TANGO_DIRECTOR_PATCH_V1
+import { createTangoDirector } from "./tango-director.mjs";
 import { computeMusicIntent, createMusicIntentState, formatMusicDiagnostic, sampleProfile, validateMusicConfig } from "./music-intent.js";
 
 const argumentsList = process.argv.slice(2);
 const diagnosticMode = argumentsList.includes("--diagnose");
+const tangoDirectorEnabled = argumentsList.includes("--tango-director");
 const configArgument = argumentsList.find(argument => !argument.startsWith("--"));
 const CONFIG_PATH = new URL(configArgument ?? "./config.json", `file://${process.cwd()}/`);
 const UDMX_SET_CHANNEL_RANGE = 0x02;
@@ -669,6 +673,7 @@ function createExternalMasterMonitor(config, states, mode) {
   let stopped = false;
   let port = null;
   let scanTimer = null;
+  let handshakeTimer = null;
   const wantedVendorId = config.externalMaster.vendorId.toString(16).padStart(4, "0");
 
   const scheduleScan = () => {
@@ -684,12 +689,15 @@ function createExternalMasterMonitor(config, states, mode) {
     if (stopped || port) return;
     try {
       const ports = await SerialPort.list();
+      if (stopped) return;
       const unidentifiedUsbSerial = ports.filter(candidate => !candidate.vendorId &&
         /^\/dev\/(?:tty|cu)\.(?:usbserial|wchusbserial|usbmodem)/i.test(candidate.path) &&
         candidate.path !== config.openDmx.path);
+      const eligible = ports.filter(candidate => candidate.path !== config.openDmx.path);
       const match = (config.externalMaster.path
-        ? ports.find(candidate => candidate.path === config.externalMaster.path) : null)
-        ?? ports.find(candidate => candidate.vendorId?.toLowerCase() === wantedVendorId)
+        ? eligible.find(candidate => candidate.path === config.externalMaster.path) : null)
+        ?? eligible.find(candidate => candidate.vendorId?.toLowerCase() === "303a")
+        ?? eligible.find(candidate => candidate.vendorId?.toLowerCase() === wantedVendorId)
         ?? (unidentifiedUsbSerial.length === 1 ? unidentifiedUsbSerial[0] : null);
       if (!match) {
         scheduleScan();
@@ -710,6 +718,8 @@ function createExternalMasterMonitor(config, states, mode) {
             const report = JSON.parse(line.slice(7));
             if (typeof report.static === "boolean" && Number.isFinite(report.hue) && report.hue >= 0 && report.hue < 360) {
               tableState = report;
+              clearInterval(handshakeTimer);
+              handshakeTimer = null;
               if (!report.static) lastFollowHue = null;
             }
           } catch { /* Ignore incomplete or malformed reports. */ }
@@ -737,9 +747,13 @@ function createExternalMasterMonitor(config, states, mode) {
         );
       });
       candidate.once("close", () => {
+        clearInterval(handshakeTimer);
+        handshakeTimer = null;
         if (port === candidate) port = null;
         tableState = null;
         lastFollowHue = null;
+        musicMaster = null;
+        lastMusicCommandAt = -Infinity;
         mode.externalConnected = false;
         mode.externalHasMessage = false;
         mode.externalPort = null;
@@ -748,6 +762,10 @@ function createExternalMasterMonitor(config, states, mode) {
       });
       candidate.on("error", error => console.error(`External master serial error: ${error.message}`));
       candidate.open(error => {
+        if (stopped) {
+          candidate.close(() => {});
+          return;
+        }
         if (error) {
           console.error(`Could not open external master ${match.path}: ${error.message}`);
           if (port === candidate) port = null;
@@ -765,9 +783,11 @@ function createExternalMasterMonitor(config, states, mode) {
         if (mode.name !== "individual") {
           setIndividualMode(config, states, mode, performance.now());
         }
-        candidate.write("BRIDGE?\n", error => {
+        const handshake = () => candidate.write("BRIDGE?\n", error => {
           if (error) console.warn(`Bridge handshake failed: ${error.message}`);
         });
+        handshake();
+        if (!tableState) handshakeTimer = setInterval(handshake, 1000);
         console.log(`Listening for the external lighting master on ${match.path} at ${config.externalMaster.baudRate} baud.`);
       });
     } catch (error) {
@@ -784,7 +804,7 @@ function createExternalMasterMonitor(config, states, mode) {
     const connection = port;
     if (!connection?.isOpen || !tableState) fail("Table lights bridge is unavailable or needs updated firmware");
     await serialAction(done => connection.write(hue === null ? "WANDER\n" : `STATIC ${hue}\n`, done));
-    if (port === connection && tableState) tableState = { static: hue !== null, hue: hue ?? tableState.hue };
+    if (port === connection && tableState) tableState = { ...tableState, static: hue !== null, hue: hue ?? tableState.hue };
   };
   const syncTablePair = async (now = performance.now(), force = false) => {
     if (musicMaster) return;
@@ -799,6 +819,20 @@ function createExternalMasterMonitor(config, states, mode) {
   };
   void scan();
   return {
+    openDmxTransport: () => {
+      const connection = port;
+      if (!connection?.isOpen || tableState?.dmxProtocol !== 1) return null;
+      return {
+        name: `ESP32-C3 DMX ${connection.path}`,
+        send: async universe => {
+          if (port !== connection || !connection.isOpen || tableState?.dmxProtocol !== 1) {
+            throw new Error("Bridge disconnected or DMX handshake unavailable");
+          }
+          await serialAction(done => connection.write(encodeBridgeDmx(universe), done));
+        },
+        close: async () => {}
+      };
+    },
     tableLeader,
     syncTablePair,
     syncMusicMaster: async (transition, intent = null, now = performance.now()) => {
@@ -871,6 +905,8 @@ function createExternalMasterMonitor(config, states, mode) {
     close: async () => {
       stopped = true;
       clearTimeout(scanTimer);
+      clearInterval(handshakeTimer);
+      handshakeTimer = null;
       if (mode.tablePairLeaderId && port?.isOpen && tableState) {
         await setTableColour(null).catch(error => console.warn(`Could not release table lights: ${error.message}`));
       }
@@ -884,12 +920,40 @@ function fixtureOutput(config, states, state, now, controls) {
     const controllingState = pairLeader(states, state);
     let hue = controllingState.staticHue ?? transitionHue(controllingState.transition, now);
     const music = controllingState.staticHue === null ? controls.outputMusicIntent ?? controls.musicIntent : null;
+    if (controls.tangoLook && controllingState.staticHue === null) {
+      // Master mode shares one trajectory; individual mode uses independent
+      // fixture-id-keyed trajectories without assuming anything about venue position.
+      const look = controls.tangoLook.look;
+      hue = controls.mode?.name === "individual"
+        ? look.fixtureHues?.[controllingState.fixture.id] ?? look.hue : look.hue;
+      const channels = state.fixture.type?.channels ?? {};
+      const hasDimmer = "brightness" in channels;
+      const minimum = config.music.minimumBrightnessPercent / 100;
+      const maximum = config.music.maximumBrightnessPercent / 100;
+      const directedBrightness = Math.min(maximum, Math.max(minimum, look.brightness));
+      let [red, green, blue] = hsvToRgb(hue, look.saturation, hasDimmer ? 1 : directedBrightness);
+      const upLevel = controls.mode?.lightsUpTransition
+        ? lightsUpLevel(controls.mode, now) : Number(Boolean(controls.mode?.lightsUp));
+      const up = state.fixture.lightsUpColour ?? { red: 255, green: 255, blue: 255 };
+      red = Math.round(red + (up.red - red) * upLevel);
+      green = Math.round(green + (up.green - green) * upLevel);
+      blue = Math.round(blue + (up.blue - blue) * upLevel);
+      if (!hasDimmer) {
+        const scale = controls.masterBrightness / 255;
+        red = Math.round(red * scale); green = Math.round(green * scale); blue = Math.round(blue * scale);
+      }
+      const brightness = directedBrightness + (1-directedBrightness)*upLevel;
+      return { hue, values:{ red,green,blue, brightness:Math.round(controls.masterBrightness*brightness) },
+        musicValue:directedBrightness, controllingState };
+    }
     if (music?.accent) {
       const fixtureIndex = states.indexOf(state);
       const accentHue = (music.accent.hue + [-16, -5, 7, 20][fixtureIndex % 4] + 360) % 360;
       hue = hueMix(hue, accentHue, music.accent.shape * music.influence);
     }
-    const musicValue = music ? music.brightness : 1;
+    const musicValue = music ? music.brightness
+      : controllingState.staticHue === null && controls.tangoBackgroundBrightness !== null && controls.tangoBackgroundBrightness !== undefined
+        ? controls.tangoBackgroundBrightness : 1;
     const channels = state.fixture.type?.channels ?? {};
     const hasDimmer = "brightness" in channels;
     let [red, green, blue] = hsvToRgb(hue, music ? music.saturation : 1, hasDimmer ? 1 : musicValue);
@@ -1031,9 +1095,10 @@ async function createOpenDmxTransport(config) {
   };
 }
 
-async function createTransport(config) {
+async function createTransport(config, externalMaster) {
   return createDmxOutputs([
     () => createUdmxTransport(config),
+    () => externalMaster?.openDmxTransport?.(),
     ...(config.openDmx.enabled ? [() => createOpenDmxTransport(config)] : [])
   ], { retryMs: 500 });
 }
@@ -1171,6 +1236,18 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
               brightness: displayedIntent.brightness,
               saturation: displayedIntent.saturation,
               structure: displayedIntent.structure
+            } : null,
+            director: controls.tangoLook ? {
+              brightness: controls.tangoLook.look.brightness,
+              colourAcceleration: controls.tangoLook.look.colourAcceleration,
+              emphasis: controls.tangoLook.look.accent,
+              feature: controls.tangoLook.feature,
+              cue: controls.tangoLook.look.cue,
+              colourCueCount: controls.tangoLook.look.colourCueCount,
+              activityDropCount: controls.tangoLook.look.activityDropCount,
+              selectedEventCount: controls.tangoLook.look.selectedEventCount
+            } : controls.tangoBackgroundBrightness !== null ? {
+              brightness: controls.tangoBackgroundBrightness, colourAcceleration: 1, emphasis: 0
             } : null
           },
           externalMaster: {
@@ -1238,9 +1315,13 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
       }
       if (request.method === "POST" && url.pathname === "/api/music") {
         const body = await readJson(request);
+        const reanalyseRequested = ["tangoColourChangeSensitivity", "tangoAccentFallbackDelaySeconds",
+          "tangoEventSensitivity", "tangoEventMinimumSpacingSeconds"]
+          .some(name => body[name] !== undefined && Number(body[name]) !== config.music[name]);
         config.music = validateMusicConfig({ ...config.music, ...body });
         await persistMusicConfig(config.music);
-        json(response, 200, { music: config.music });
+        const reanalysing = reanalyseRequested && playback.reanalyse();
+        json(response, 200, { music: config.music, status: playback.snapshot.status, reanalysing });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/calibration") {
@@ -1463,18 +1544,26 @@ async function runDiagnostics(config, transport) {
 
 async function main() {
   const config = validateConfig(JSON.parse(await readFile(CONFIG_PATH, "utf8")));
-  const transport = await createTransport(config);
+  const states = config.fixtures.map(fixture => createFixtureState(config, fixture, performance.now()));
+  const mode = createModeState(config, performance.now());
+  const externalMaster = createExternalMasterMonitor(config, states, mode);
+  const transport = await createTransport(config, externalMaster);
   console.log(
     `Lighting controller ready; ${config.fixtures.length} fixtures at ${config.fps} FPS.`
   );
 
   if (diagnosticMode) {
     try {
+      for (let attempt = 0; !transport.status.connected && attempt < 20; attempt += 1) {
+        await wait(250);
+        await transport.send(Buffer.alloc(config.universeLength));
+      }
       if (!transport.status.connected) fail("Diagnostics require a connected DMX output");
       await runDiagnostics(config, transport);
     } finally {
       await transport.send(Buffer.alloc(config.universeLength, 0));
       await transport.close();
+      await externalMaster.close();
     }
     return;
   }
@@ -1482,7 +1571,6 @@ async function main() {
   let stopped = false;
   let timer;
   let webServer;
-  let externalMaster;
   const analyseAudio = createAudioAnalyser();
   const playback = new PlaybackCoordinator({ analyse: analyseAudio });
   const stop = async signal => {
@@ -1491,7 +1579,6 @@ async function main() {
     clearTimeout(timer);
     webServer?.close();
     webServer?.closeAllConnections?.();
-    await externalMaster?.close();
     playback.cancel();
     await analyseAudio.close();
     try {
@@ -1501,16 +1588,18 @@ async function main() {
       console.error(`\n${signal}: could not send blackout: ${error.message}`);
     } finally {
       await transport.close();
+      await externalMaster.close();
     }
   };
   process.once("SIGINT", () => void stop("SIGINT"));
   process.once("SIGTERM", () => void stop("SIGTERM"));
 
-  const states = config.fixtures.map(fixture => createFixtureState(config, fixture, performance.now()));
-  const mode = createModeState(config, performance.now());
-  const controls = { masterBrightness: config.masterBrightness, mode, musicIntent: null };
+  const controls = { masterBrightness: config.masterBrightness, mode, musicIntent: null, tangoBackgroundBrightness: null };
   const musicState = createMusicIntentState();
-  externalMaster = createExternalMasterMonitor(config, states, mode);
+  let tangoProfile = null;
+  let tangoDirector = null;
+  let tangoLastScene = null;
+  if(tangoDirectorEnabled) console.log("Experimental tango director ENABLED; original renderer available without --tango-director");
   webServer = createWebServer(config, states, mode, controls, externalMaster, transport, playback);
   webServer.listen(config.webPort, "0.0.0.0", () => {
     console.log(`Lighting controls: http://localhost:${config.webPort}`);
@@ -1548,13 +1637,31 @@ async function main() {
           controls.musicIntent = nextIntent;
           const canDriveHue = musicCanDriveHue(config, mode, playback.snapshot.status, musicRelease);
           if (!canDriveHue && musicWasDriving) releaseMusicTransitions(config, states, mode, now);
-          if (canDriveHue) applyMusicMotion(config, states, mode, now, nextIntent);
+          if(tangoDirectorEnabled && playback.snapshot.status === "READY") {
+            if(tangoProfile !== playback.snapshot.profile) {
+              tangoProfile = playback.snapshot.profile;
+              tangoDirector = createTangoDirector(tangoProfile, config.music, states.map(state=>state.fixture.id));
+              tangoLastScene = null;
+            }
+            controls.tangoLook = tangoDirector(musicPosition, config.music);
+            controls.tangoBackgroundBrightness = null;
+            if(controls.tangoLook && controls.tangoLook.scene !== tangoLastScene) {
+              console.log(`[TANGO] ${musicPosition.toFixed(1)}s ${controls.tangoLook.explanation}`);
+              tangoLastScene = controls.tangoLook.scene;
+            }
+          } else {
+            controls.tangoLook = null;
+            if(tangoDirectorEnabled && tangoProfile) controls.tangoBackgroundBrightness = config.music.minimumBrightnessPercent/100;
+          }
+          if (canDriveHue && !controls.tangoLook) applyMusicMotion(config, states, mode, now, nextIntent);
           musicWasDriving = canDriveHue;
         }
       } else if (playback.snapshot.status !== "ANALYSING") {
         if (musicWasDriving) releaseMusicTransitions(config, states, mode, now);
         musicWasDriving = false;
         controls.musicIntent = null;
+        controls.tangoLook = null;
+        if(tangoDirectorEnabled && tangoProfile) controls.tangoBackgroundBrightness = config.music.minimumBrightnessPercent/100;
         musicState.lastAt = null;
       }
       const musicSecond = Math.floor(musicPosition);

@@ -64,6 +64,14 @@ export class PlaybackCoordinator {
     if (this.snapshot.readyAt === null || this.snapshot.readyAt === undefined) return 0;
     return Math.min(1, Math.max(0, (now - this.snapshot.readyAt) / (seconds * 1000)));
   }
+  reanalyse() {
+    const event = this.snapshot.event;
+    if (!event || event.kind !== "tango" || ["stopped", "ended"].includes(event.state)) return false;
+    this.generation += 1;
+    this.snapshot.profile = null; this.snapshot.error = null; this.snapshot.status = "ANALYSING";
+    this.snapshot.readyAt = null; this.#startAnalysis(event, this.generation);
+    return true;
+  }
   release(now = this.now(), seconds = 3) {
     if (this.snapshot.stoppedAt === undefined) return 0;
     return Math.min(1, Math.max(0, 1 - (now - this.snapshot.stoppedAt) / (seconds * 1000)));

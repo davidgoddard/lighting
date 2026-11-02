@@ -1,108 +1,36 @@
 import { spawn } from "node:child_process";
 import { parentPort, workerData } from "node:worker_threads";
 
-// Direct server-side port of tango-light-momentum-edges-prototype.
-const RATE = 11025, N = 1024, HOP = 256, BANDS = [[40, 200], [200, 2000], [2000, 5000]];
-const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+// Pure-JavaScript port of tango-salience-player 10/analyse.py.
+const RATE=11025,N=2048,HOP=512,DT=HOP/RATE,BINS=N/2+1;
+const clamp=(value,min=0,max=1)=>Math.max(min,Math.min(max,value));
+function fft(real,imag){const n=real.length;for(let i=1,j=0;i<n;i+=1){let bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j){[real[i],real[j]]=[real[j],real[i]];[imag[i],imag[j]]=[imag[j],imag[i]];}}for(let length=2;length<=n;length<<=1){const theta=-2*Math.PI/length,wr=Math.cos(theta),wi=Math.sin(theta);for(let offset=0;offset<n;offset+=length){let ar=1,ai=0;for(let j=0;j<length/2;j+=1){const a=offset+j,b=a+length/2,tr=real[b]*ar-imag[b]*ai,ti=real[b]*ai+imag[b]*ar;real[b]=real[a]-tr;imag[b]=imag[a]-ti;real[a]+=tr;imag[a]+=ti;const nr=ar*wr-ai*wi;ai=ar*wi+ai*wr;ar=nr;}}}}
+function decode(input){return new Promise((resolve,reject)=>{const child=spawn("ffmpeg",["-hide_banner","-nostdin","-loglevel","error","-i",input,"-vn","-sn","-dn","-ac","1","-ar",String(RATE),"-f","f32le","pipe:1"],{stdio:["ignore","pipe","pipe"]});const chunks=[];let stderr="",settled=false;child.once("error",error=>{settled=true;reject(new Error(`Cannot launch ffmpeg: ${error.message}`));});child.stderr.on("data",data=>{if(stderr.length<4096)stderr+=data.toString();});child.stdout.on("data",data=>chunks.push(data));child.once("close",code=>{if(settled)return;if(code!==0)reject(new Error(`ffmpeg failed (${code}): ${stderr.trim()}`));else{const decoded=Buffer.concat(chunks);if(decoded.length<N*4)reject(new Error("No decodable audio samples"));else resolve(new Float32Array(decoded.buffer,decoded.byteOffset,Math.floor(decoded.byteLength/4)));}});});}
+function percentile(values,q){const sorted=Array.from(values).sort((a,b)=>a-b);return sorted[Math.floor((sorted.length-1)*q)]??0;}
+function norm(values,cap=.95){const lo=percentile(values,.12),hi=percentile(values,cap),span=hi-lo+1e-8;return Float64Array.from(values,value=>clamp((value-lo)/span));}
+function gaussian(values,sigma){if(sigma<=.55)return Float64Array.from(values);const radius=Math.max(1,Math.ceil(sigma*3)),kernel=new Float64Array(radius*2+1);let total=0;for(let i=-radius;i<=radius;i+=1){const weight=Math.exp(-.5*(i/sigma)**2);kernel[i+radius]=weight;total+=weight;}const out=new Float64Array(values.length);for(let i=0;i<values.length;i+=1){let sum=0;for(let k=-radius;k<=radius;k+=1)sum+=values[Math.max(0,Math.min(values.length-1,i+k))]*kernel[k+radius];out[i]=sum/total;}return out;}
+function medianSmooth(values,radius=4){const out=new Float64Array(values.length);for(let i=0;i<values.length;i+=1){const local=[];for(let k=Math.max(0,i-radius);k<=Math.min(values.length-1,i+radius);k+=1)local.push(values[k]);local.sort((a,b)=>a-b);out[i]=local[Math.floor(local.length/2)];}return out;}
+function delta(values,seconds){const frames=Math.max(2,Math.round(seconds/DT)),smoothed=gaussian(values,Math.max(1,frames/4)),out=new Float64Array(values.length);for(let i=0;i<values.length;i+=1)out[i]=Math.abs(smoothed[Math.min(values.length-1,i+frames)]-smoothed[Math.max(0,i-frames)]);return out;}
+function interpolate(values,time){const exact=clamp(time/DT,0,values.length-1),i=Math.floor(exact),j=Math.min(values.length-1,i+1),f=exact-i;return values[i]*(1-f)+values[j]*f;}
+function peakEvents(curve,smoothingSeconds,threshold,minDistanceSeconds){const y=gaussian(curve,Math.max(1,smoothingSeconds/DT/6)),candidates=[];for(let i=1;i<y.length-1;i+=1)if(y[i]>=threshold&&y[i]>=y[i-1]&&y[i]>y[i+1]){const radius=Math.max(1,Math.round(smoothingSeconds/DT));const floor=Math.max(y[Math.max(0,i-radius)],y[Math.min(y.length-1,i+radius)]);if(y[i]-floor>=.09)candidates.push({index:i,time:+(i*DT).toFixed(2),strength:+y[i].toFixed(3)});}candidates.sort((a,b)=>b.strength-a.strength);const accepted=[];for(const event of candidates)if(accepted.every(other=>Math.abs(other.time-event.time)>=minDistanceSeconds))accepted.push(event);return accepted.sort((a,b)=>a.time-b.time);}
 
-function fft(real, imag) {
-  const n = real.length;
-  for (let i = 1, j = 0; i < n; i += 1) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
-    if (i < j) { [real[i], real[j]] = [real[j], real[i]]; [imag[i], imag[j]] = [imag[j], imag[i]]; } }
-  for (let length = 2; length <= n; length <<= 1) {
-    const theta = -2 * Math.PI / length, wr = Math.cos(theta), wi = Math.sin(theta);
-    for (let offset = 0; offset < n; offset += length) { let ar = 1, ai = 0;
-      for (let j = 0; j < length / 2; j += 1) { const a = offset + j, b = a + length / 2;
-        const tr = real[b] * ar - imag[b] * ai, ti = real[b] * ai + imag[b] * ar;
-        real[b] = real[a] - tr; imag[b] = imag[a] - ti; real[a] += tr; imag[a] += ti;
-        const nr = ar * wr - ai * wi; ai = ar * wi + ai * wr; ar = nr; } }
-  }
+function analyse(pcm){
+ const startedAt=Date.now(),duration=pcm.length/RATE,count=Math.floor((pcm.length-N)/HOP)+1,real=new Float64Array(N),imag=new Float64Array(N),window=Float64Array.from({length:N},(_,i)=>.5-.5*Math.cos(2*Math.PI*i/(N-1))),spectra=new Array(count),rms=new Float64Array(count);
+ for(let frame=0;frame<count;frame+=1){const offset=frame*HOP,spectrum=new Float32Array(BINS);let square=0;for(let i=0;i<N;i+=1){const value=pcm[offset+i];square+=value*value;real[i]=value*window[i];imag[i]=0;}fft(real,imag);for(let bin=0;bin<BINS;bin+=1)spectrum[bin]=Math.hypot(real[bin],imag[bin]);spectra[frame]=spectrum;rms[frame]=Math.sqrt(square/N);}
+ const floor=new Float32Array(BINS);for(let bin=0;bin<BINS;bin+=1){const sampled=[];for(let frame=0;frame<count;frame+=4)sampled.push(spectra[frame][bin]);sampled.sort((a,b)=>a-b);floor[bin]=sampled[Math.floor((sampled.length-1)*.15)]??0;}
+ const flux=new Float64Array(count),bassRaw=new Float64Array(count),centroidRaw=new Float64Array(count),chroma=Array.from({length:12},()=>new Float64Array(count));let previousLog=new Float64Array(BINS);
+ for(let frame=0;frame<count;frame+=1){let fluxSum=0,bass=0,total=0,weighted=0;const nextLog=new Float64Array(BINS);for(let bin=1;bin<BINS;bin+=1){const frequency=bin*RATE/N,clean=Math.max(0,spectra[frame][bin]-floor[bin]*1.05),logged=Math.log1p(clean*4);fluxSum+=Math.max(0,logged-previousLog[bin]);nextLog[bin]=logged;if(frequency<230)bass+=clean;total+=clean;weighted+=clean*frequency;if(frequency>=27.5&&clean>0){const midi=Math.round(69+12*Math.log2(frequency/440)),pc=((midi%12)+12)%12;chroma[pc][frame]+=clean*clean;}}flux[frame]=fluxSum/(BINS-1);bassRaw[frame]=bass;centroidRaw[frame]=weighted/(total+1e-9);previousLog=nextLog;let chromaNorm=0;for(let pc=0;pc<12;pc+=1)chromaNorm+=chroma[pc][frame]**2;chromaNorm=Math.sqrt(chromaNorm)+1e-9;for(let pc=0;pc<12;pc+=1)chroma[pc][frame]/=chromaNorm;}
+ const onset=gaussian(norm(flux),1),activity=gaussian(onset,1.2/DT),bass=gaussian(norm(bassRaw),.16/DT),logRms=Float64Array.from(rms,value=>Math.log1p(value*40)),energy=gaussian(norm(logRms),1.2/DT),spectralBrightness=gaussian(norm(centroidRaw),.7/DT);
+ const smoothedChroma=chroma.map(values=>gaussian(medianSmooth(values,4),.6/DT));for(let frame=0;frame<count;frame+=1){let length=0;for(let pc=0;pc<12;pc+=1)length+=smoothedChroma[pc][frame]**2;length=Math.sqrt(length)+1e-9;for(let pc=0;pc<12;pc+=1)smoothedChroma[pc][frame]/=length;}
+ const chromaBackground=smoothedChroma.map(values=>gaussian(values,5/DT)),harmRaw=new Float64Array(count);for(let frame=0;frame<count;frame+=1){let sum=0;for(let pc=0;pc<12;pc+=1)sum+=(smoothedChroma[pc][frame]-chromaBackground[pc][frame])**2;harmRaw[frame]=Math.sqrt(sum);}
+ const combineDelta=values=>{const short=delta(values,3),long=delta(values,8);return norm(Float64Array.from(short,(value,i)=>.65*value+.35*long[i]));};
+ const activityShort=delta(activity,3),activityLong=delta(activity,8),rhythm=norm(Float64Array.from(activityShort,(value,i)=>.7*value+.3*activityLong[i])),dynamics=combineDelta(energy),harmony=combineDelta(harmRaw),timbre=combineDelta(spectralBrightness);
+ const past=gaussian(activity,3/DT),recent=gaussian(activity,.35/DT),drop=norm(Float64Array.from(past,(value,i)=>Math.max(0,value-recent[i])));for(let i=0;i<count;i+=1)drop[i]*=clamp(past[i]*2.2);
+ const fiveSeconds=Math.round(5/DT),build=norm(Float64Array.from(energy,(value,i)=>Math.max(0,value-energy[Math.max(0,i-fiveSeconds)]))),onsetBackground=gaussian(onset,2/DT),accent=norm(Float64Array.from(onset,(value,i)=>Math.max(0,value-onsetBackground[i]))),salienceRaw=new Float64Array(count);
+ for(let i=0;i<count;i+=1){const sorted=[rhythm[i],dynamics[i],harmony[i],timbre[i]].sort((a,b)=>a-b),agreement=(sorted[3]+.8*sorted[2]+.45*sorted[1])/2.25;salienceRaw[i]=.78*agreement+.22*sorted[3];}const salience=norm(gaussian(salienceRaw,.7/DT));
+ const tracesSource={rhythm,dynamics,harmony,timbre,activityDrop:drop,accent,build,salience,energy,activity,bass},samplePeriod=.2,targetCount=Math.ceil(duration/samplePeriod),traces={time:Array.from({length:targetCount},(_,i)=>+(i*samplePeriod).toFixed(2))};for(const [name,values]of Object.entries(tracesSource))traces[name]=Array.from({length:targetCount},(_,i)=>+interpolate(values,i*samplePeriod).toFixed(3));
+ const detectorEvents={};for(const [name,threshold,gap]of [["activityDrop",.62,3],["accent",.76,1.2],["build",.72,5],["rhythm",.63,4],["dynamics",.63,4],["harmony",.67,4],["timbre",.65,4]])detectorEvents[name]=peakEvents(tracesSource[name],.4,threshold,gap).filter(event=>event.time>2&&event.time<duration-2).map(({index,...event})=>event);
+ const events=peakEvents(salience,.7,.53,4).filter(event=>event.time>2.5&&event.time<duration-2).map(({index,...event})=>event),timeline=traces.time.map((time,i)=>[traces.energy[i],traces.energy[i],traces.activity[i],i?clamp((traces.energy[i]-traces.energy[Math.max(0,i-25)])*2,-1,1):0]),rhythmLegacy=traces.time.map((_,i)=>[traces.activity[i],traces.rhythm[i],traces.build[i]]);
+ return {version:10,duration:+duration.toFixed(2),hop:samplePeriod,timeline,rhythm:rhythmLegacy,rhythmHop:samplePeriod,phraseMedian:percentile(energy,.5),phraseUpper:percentile(energy,.85),events,strong:detectorEvents.accent,breaks:detectorEvents.activityDrop.map(event=>({t:event.time,lowAt:event.time,drop:event.strength,reentry:null})),entrances:[],edges:[],samplePeriod,traces,detectorEvents,info:{analysisMs:Date.now()-startedAt,algorithm:"tango-salience-player-10"}};
 }
-
-function decode(input) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", ["-hide_banner", "-nostdin", "-loglevel", "error", "-i", input,
-      "-vn", "-sn", "-dn", "-ac", "1", "-ar", String(RATE), "-f", "f32le", "pipe:1"], { stdio: ["ignore", "pipe", "pipe"] });
-    const chunks = []; let stderr = "", settled = false;
-    child.once("error", error => { settled = true; reject(new Error(`Cannot launch ffmpeg: ${error.message}`)); });
-    child.stderr.on("data", data => { if (stderr.length < 4096) stderr += data.toString(); });
-    child.stdout.on("data", data => chunks.push(data));
-    child.once("close", code => { if (settled) return;
-      if (code !== 0) reject(new Error(`ffmpeg failed (${code}): ${stderr.trim()}`));
-      else { const decoded = Buffer.concat(chunks);
-        if (decoded.length < N * 4) reject(new Error("No decodable audio samples"));
-        else resolve(new Float32Array(decoded.buffer, decoded.byteOffset, Math.floor(decoded.byteLength / 4))); } });
-  });
-}
-
-function generateProfile(pcm) {
-  const startedAt = Date.now(), duration = pcm.length / RATE, count = Math.floor((pcm.length - N) / HOP) + 1;
-  const rows = new Array(count), real = new Float64Array(N), imag = new Float64Array(N), sums = [0, 0, 0];
-  const smooth = [0, 0, 0], slow = [0, 0, 0], previous = [0, 0, 0];
-  const frequencies = BANDS.map(([lo, hi]) => [Math.max(1, Math.floor(lo * N / RATE)), Math.min(N / 2 - 1, Math.ceil(hi * N / RATE))]);
-  const window = Float64Array.from({ length: N }, (_, index) => .5 - .5 * Math.cos(2 * Math.PI * index / (N - 1)));
-  for (let frame = 0; frame < count; frame += 1) { const offset = frame * HOP; let square = 0;
-    for (let index = 0; index < N; index += 1) { const value = pcm[offset + index]; square += value * value; real[index] = value * window[index]; imag[index] = 0; }
-    fft(real, imag);
-    for (let band = 0; band < 3; band += 1) { let power = 0; const [lo, hi] = frequencies[band];
-      for (let bin = lo; bin <= hi; bin += 1) power += real[bin] ** 2 + imag[bin] ** 2;
-      sums[band] = Math.log1p(power); smooth[band] = smooth[band] * .80 + sums[band] * .20; slow[band] = slow[band] * .983 + sums[band] * .017; }
-    const onset = sums.map((value, band) => clamp((value - previous[band] - .045) / .90, 0, 2));
-    const relative = sums.map((value, band) => clamp((value - slow[band] - .18) / 1.35, 0, 2));
-    for (let band = 0; band < 3; band += 1) previous[band] = smooth[band];
-    rows[frame] = { t: offset / RATE, rms: Math.sqrt(square / N), onset, relative };
-  }
-  const dbValues = rows.map(row => 20 * Math.log10(Math.max(row.rms, 1e-7))).sort((a, b) => a - b);
-  const percentile = q => dbValues[Math.floor((dbValues.length - 1) * q)], floorDb = percentile(.08), peakDb = percentile(.94), span = Math.max(4, peakDb - floorDb);
-  let fast = 0, phrase = 0, trend = 0;
-  const frames = rows.map(row => { const energy = clamp((20 * Math.log10(Math.max(row.rms, 1e-7)) - floorDb) / span);
-    fast += (energy - fast) * .24; phrase += (energy - phrase) * .009; trend += (phrase - trend) * .005;
-    return { t: row.t, energy, fast, phrase, development: clamp((phrase - trend) * 5, -1, 1), onset: row.onset, relative: row.relative }; });
-  const events = [], last = [-10, -10, -10];
-  for (let index = 2; index < frames.length - 2; index += 1) { const current = frames[index];
-    for (let band = 0; band < 3; band += 1) { const onset = current.onset[band], score = clamp(onset * .68 + current.relative[band] * .35, 0, 1.5);
-      if (score < .24 || onset < frames[index - 1].onset[band] || onset < frames[index + 1].onset[band] || current.t - last[band] < .14) continue;
-      const strength = clamp((score - .19) / .75); if (strength < .08) continue;
-      last[band] = current.t; events.push({ t: +current.t.toFixed(3), band, strength: +strength.toFixed(3) }); } }
-  const strong = [];
-  for (const event of events.filter(event => event.strength >= .53).sort((a, b) => a.t - b.t)) { const nearby = strong.at(-1);
-    if (nearby && event.t - nearby.t < .32) { if (event.strength > nearby.strength) Object.assign(nearby, event); continue; } strong.push({ ...event }); }
-  const lookup = time => frames[Math.max(0, Math.min(frames.length - 1, Math.round(time * RATE / HOP)))];
-  const breaks = [];
-  for (let time = 2; time < duration - 1; time += .1) { const before = (lookup(time - .95).fast + lookup(time - .55).fast) / 2;
-    const after = (lookup(time + .12).fast + lookup(time + .35).fast) / 2, drop = before - after;
-    if (before < .62 || drop < .43 || (breaks.length && time - breaks.at(-1).t < 3)) continue;
-    let lowest = after, at = time + .2; for (let delta = .2; delta < 1.6; delta += .1) if (lookup(time + delta).fast < lowest) { lowest = lookup(time + delta).fast; at = time + delta; }
-    const recovered = lookup(Math.min(duration - .1, at + 1.15)).fast;
-    breaks.push({ t: +time.toFixed(2), lowAt: +at.toFixed(2), drop: +drop.toFixed(2), reentry: recovered - lowest > .23 ? +(at + 1.15).toFixed(2) : null }); }
-  const entrances = [];
-  for (let time = 2; time < duration - 1; time += .1) { const quiet = (lookup(time - 1.15).fast + lookup(time - .65).fast) / 2;
-    const loud = (lookup(time + .1).fast + lookup(time + .3).fast) / 2, rise = loud - quiet;
-    if (quiet > .47 || loud < .69 || rise < .38 || (entrances.length && time - entrances.at(-1).t < 4)) continue;
-    entrances.push({ t: +time.toFixed(2), rise: +rise.toFixed(2) }); }
-  const edges = [];
-  for (let time = 1; time < duration - .7; time += .05) { const pre = (lookup(time - .38).fast + lookup(time - .19).fast) / 2, post = (lookup(time + .16).fast + lookup(time + .36).fast) / 2;
-    const change = post - pre, amplitude = Math.abs(change); if (amplitude < .30) continue;
-    const localBefore = (lookup(time - .75).fast + lookup(time - .55).fast + pre) / 3, localAfter = (post + lookup(time + .5).fast + lookup(time + .7).fast) / 3;
-    if (Math.abs(localAfter - localBefore) < .26) continue;
-    const kind = change < 0 ? "STOP" : "START", strength = clamp((amplitude - .23) / .57, .25, 1), prior = edges.at(-1);
-    if (prior && prior.kind === kind && time - prior.t < .9) { if (amplitude > prior.amplitude) Object.assign(prior, { t: +time.toFixed(2), strength: +strength.toFixed(3), amplitude }); continue; }
-    edges.push({ t: +time.toFixed(2), kind, strength: +strength.toFixed(3), amplitude }); }
-  edges.forEach(edge => delete edge.amplitude);
-  const phraseValues = frames.map(frame => frame.phrase).sort((a, b) => a - b), phraseAt = q => phraseValues[Math.floor((phraseValues.length - 1) * q)];
-  const phraseMedian = phraseAt(.5), phraseUpper = phraseAt(.85), rhythm = [], salient = events.filter(event => event.strength > .35).sort((a, b) => a.t - b.t); let left = 0, right = 0;
-  for (let time = 0; time < duration; time += .25) { while (left < salient.length && salient[left].t < time - 3.5) left += 1; while (right < salient.length && salient[right].t <= time) right += 1;
-    const unique = []; for (let index = left; index < right; index += 1) if (!unique.length || salient[index].t - unique.at(-1) > .115) unique.push(salient[index].t);
-    const intervals = []; for (let index = 1; index < unique.length; index += 1) { const gap = unique[index] - unique[index - 1]; if (gap > .15 && gap < 1.4) intervals.push(gap); }
-    const mean = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0;
-    const cv = mean ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - mean) ** 2, 0) / intervals.length) / mean : 2;
-    const regularity = clamp((.85 - cv) / .65) * clamp(intervals.length / 5), density = clamp((unique.length / 3.5 - 1.3) / 4.5), pace = mean ? clamp((.8 - mean) / .52) : 0;
-    rhythm.push([+clamp(.52 * regularity + .32 * density + .16 * pace * regularity).toFixed(3), +regularity.toFixed(3), +pace.toFixed(3)]); }
-  return { version: 4, duration: +duration.toFixed(2), hop: HOP / RATE,
-    timeline: frames.map(frame => [+frame.energy.toFixed(3), +frame.fast.toFixed(3), +frame.phrase.toFixed(3), +frame.development.toFixed(3)]),
-    rhythm, rhythmHop: .25, phraseMedian, phraseUpper, events, strong, breaks, entrances, edges,
-    info: { floorDb: +floorDb.toFixed(1), peakDb: +peakDb.toFixed(1), analysisMs: Date.now() - startedAt } };
-}
-
-try { parentPort.postMessage({ ok: true, profile: generateProfile(await decode(workerData.input)) }); }
-catch (error) { parentPort.postMessage({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
+try{parentPort.postMessage({ok:true,profile:analyse(await decode(workerData.input))});}catch(error){parentPort.postMessage({ok:false,error:error instanceof Error?error.message:String(error)});}

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { encodeBridgeDmx } from '../bridge-dmx.js';
 import { validateMusicConfig } from '../music-intent.js';
 
 // Exercise the real server and serial monitor with hardware replaced at their boundaries.
@@ -22,7 +23,7 @@ function harness() {
   const context = vm.createContext({
     process: { argv: [], cwd: () => '/tmp' }, URL, Buffer, performance, console,
     setTimeout, clearTimeout, setInterval, clearInterval, SerialPort,
-    ReadlineParser: class {}, validateMusicConfig,
+    ReadlineParser: class {}, validateMusicConfig, encodeBridgeDmx,
     createServer: callback => { handler = callback; return { once() {} }; }
   });
   vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode, setIndividualMode};', context);
@@ -69,6 +70,28 @@ test('bridge-only commands, mixed selection validation, and disconnection', asyn
   await monitor.close();
   assert.equal(monitor.tableFixture().length, 0);
   assert.equal((await h.request('/api/static', selected)).status, 400);
+});
+
+test('combined bridge shares USB for DMX and table control, gates legacy firmware, and rejects stale connections', async () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const monitor = h.api.createExternalMasterMonitor(config, [], h.api.createModeState(config, 0));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(monitor.openDmxTransport(), null);
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0}');
+  assert.equal(monitor.openDmxTransport(), null);
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0,"dmxProtocol":1}');
+  const output = monitor.openDmxTransport();
+  await output.send(Buffer.from([255, 165, 90, 10]));
+  assert.deepEqual(h.port().writes.at(-1), encodeBridgeDmx(Buffer.from([255, 165, 90, 10])));
+  await monitor.setTableColour(120);
+  await output.send(Buffer.from([50]));
+  assert.equal(h.port().writes.at(-2), 'STATIC 120\n');
+  await output.close();
+  assert.ok(h.port().isOpen, 'output wrapper must not close the shared port');
+  await monitor.close();
+  await assert.rejects(output.send(Buffer.alloc(512)), /disconnected/);
+  assert.equal(monitor.openDmxTransport(), null);
 });
 
 test('mixed pairs follow a DMX leader, support control from either member, and unpair cleanly', async () => {
@@ -162,7 +185,8 @@ test('music master mode gives every automatic DMX fixture one shared trajectory'
   const mode = h.api.createModeState(config, 0); mode.name = 'master';
   const intent = {effectiveTransitionSeconds:8,character:.4,structure:{mode:'NORMAL'},kick:{triggered:false}};
   h.api.applyMusicMotion(config, states, mode, 1000, intent, () => 160);
-  assert.ok(states.every(state => state.transition.toHue === states[0].transition.toHue));
+  const normalizedTargets = states.map(state => ((state.transition.toHue % 360) + 360) % 360);
+  assert.ok(normalizedTargets.every(target => Math.abs(target - normalizedTargets[0]) < 1e-9));
   h.api.applyMusicMotion(config, states, mode, 2000, intent, () => 260);
   assert.ok(states.every(state => state.transition.progress === states[0].transition.progress));
 });
@@ -181,7 +205,8 @@ test('master entry and exit use protected subtle blend periods', () => {
   assert.equal(mode.name, 'master');
   assert.ok(mode.masterTransition.durationMs >= 2000 && mode.masterTransition.durationMs <= 5000);
   assert.equal(mode.masterTransition.easing, 'smoothstep');
-  assert.ok(states.every(state => state.transition.toHue === states[0].transition.toHue));
+  const normalizedEntryTargets = states.map(state => ((state.transition.toHue % 360) + 360) % 360);
+  assert.ok(normalizedEntryTargets.every(target => Math.abs(target - normalizedEntryTargets[0]) < 1e-9));
   assert.ok(states.every(state => state.transition.easing === 'smoothstep'));
   const entryTarget = mode.masterTransition.toHue;
   const intent = {effectiveTransitionSeconds:.5,character:1,structure:{mode:'START'},
@@ -309,6 +334,21 @@ test('state exposes the final RGB used by web emulation', async () => {
   h.api.createWebServer(config, states, mode, controls, {}, null);
   const state = await h.request('/api/state');
   assert.deepEqual(Object.keys(state.result.fixtures[0].finalRgb), ['red','green','blue']);
+});
+
+test('post-track background keeps automatic RGB fixtures at the audio background level', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const state = h.api.createFixtureState(config, config.fixtures[0], 0);
+  state.transition = {fromHue:0,toHue:0,startedAt:0,durationMs:10000};
+  const mode = h.api.createModeState(config, 0);
+  const full = h.api.renderUniverse(config, [state], 0,
+    {masterBrightness:255,mode,musicIntent:null,tangoBackgroundBrightness:1});
+  const background = h.api.renderUniverse(config, [state], 0,
+    {masterBrightness:255,mode,musicIntent:null,tangoBackgroundBrightness:.4});
+  assert.equal(background[0],Math.round(full[0]*.4));
+  assert.equal(background[1],Math.round(full[1]*.4));
+  assert.equal(background[2],Math.round(full[2]*.4));
 });
 
 test('strong drama completes several deterministic colour destinations in twenty seconds', () => {

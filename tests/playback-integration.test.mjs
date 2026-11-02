@@ -28,3 +28,22 @@ test("pause freezes the clock and a new session rejects a stale profile", async 
   coordinator.receive(event({ sessionId: "two", sequence: 1, state: "paused", positionSeconds: 22 }));
   now = 5000; assert.equal(coordinator.position(now), 22);
 });
+
+test("reanalysis invalidates and replaces the current playing profile", async () => {
+  let calls=0, resolveAgain;
+  const coordinator=new PlaybackCoordinator({now:()=>1000,analyse:async()=>{
+    calls+=1;
+    if(calls===1) return {duration:10,timeline:[[.1]]};
+    return new Promise(resolve=>{resolveAgain=resolve;});
+  }});
+  coordinator.receive(event({sessionId:"live",sequence:1,state:"playing"}));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(coordinator.snapshot.status,"READY");
+  assert.equal(coordinator.reanalyse(),true);
+  assert.equal(coordinator.snapshot.status,"ANALYSING");
+  assert.equal(coordinator.snapshot.profile,null);
+  resolveAgain({duration:10,timeline:[[.9]]});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(coordinator.snapshot.status,"READY");
+  assert.equal(coordinator.snapshot.profile.timeline[0][0],.9);
+});

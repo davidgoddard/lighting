@@ -17,6 +17,11 @@ test("prototype control defaults and ranges are preserved", () => {
     threshold: config.exceptionalKickThresholdPercent, kickTime: config.exceptionalKickColourTimeMs, structure: config.structureEffectsEnabled },
   { min: 25, max: 100, gamma: 1.05, rhythm: 100, energy: 75, relaxation: 2500, speed: 220, threshold: 90, kickTime: 650, structure: true });
   assert.throws(() => validateMusicConfig({ movementRelaxationMs: 300 }));
+  assert.equal(validateMusicConfig({ minimumBrightnessPercent: 100, maximumBrightnessPercent: 100 }).minimumBrightnessPercent, 100);
+  const tango=validateMusicConfig({tangoColourChangeSensitivity:.45,tangoAccentFallbackDelaySeconds:1,
+    tangoEventSensitivity:.49,tangoEventMinimumSpacingSeconds:3});
+  assert.equal(tango.tangoColourChangeSensitivity,.45);
+  assert.equal(tango.tangoAccentFallbackDelaySeconds,1);
 });
 
 test("track-relative energy and rhythm increase colour progress without note pulses", () => {
