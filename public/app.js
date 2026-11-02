@@ -268,10 +268,11 @@ function hexToColour(hex) {
   };
 }
 
+// The picker is a requested group colour, not a view of whichever card was
+// selected first. Keep it stable when changing a multi-fixture selection.
 function syncCortinaColourToSelection() {
-  const selected = fixtures.filter(fixture => selectedIds().includes(fixture.id));
-  applyCortinaColourButton.disabled = selected.length === 0 || selected.some(fixture => fixture.kind === "bridge");
-  if (selected.length) cortinaColourInput.value = colourToHex(selected[0].lightsUpColour);
+  const selected = fixtures.filter(fixture => selectedIds().includes(fixture.id) && fixture.kind !== "bridge");
+  applyCortinaColourButton.disabled = selected.length === 0;
 }
 
 function setHue(nextHue, send = false) {
@@ -425,7 +426,10 @@ selectAllButton.addEventListener("click", () => {
 brightnessSlider.addEventListener("input", scheduleBrightnessUpdate);
 
 applyCortinaColourButton.addEventListener("click", async () => {
-  const ids = selectedIds();
+  // Cortina colour is a property of each selected DMX fixture, independent
+  // of any pairing/master-wander relationship. The table bridge has no
+  // cortina-colour property and is deliberately excluded.
+  const ids = fixtures.filter(fixture => fixture.kind !== "bridge" && selectedIds().includes(fixture.id)).map(fixture => fixture.id);
   if (!ids.length) return;
   applyCortinaColourButton.disabled = true;
   try {
@@ -436,7 +440,7 @@ applyCortinaColourButton.addEventListener("click", async () => {
     for (const fixture of fixtures) {
       if (result.updated.includes(fixture.id)) fixture.lightsUpColour = result.colour;
     }
-    status.textContent = `Cortina colour saved for ${result.updated.length} light${result.updated.length === 1 ? "" : "s"}`;
+    status.textContent = `Cortina colour saved for ${result.updated.length} selected DMX light${result.updated.length === 1 ? "" : "s"}`;
   } catch (error) {
     status.textContent = error.message;
   } finally {

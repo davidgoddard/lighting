@@ -1,6 +1,5 @@
 import { encodeBridgeDmx } from "./bridge-dmx.js";
 import { createDmxOutputs } from "./dmx-outputs.js";
-import { encodeBridgeDmx } from "./bridge-dmx.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import process from "node:process";
@@ -11,11 +10,10 @@ import { createAudioAnalyser } from "./audio-analysis.js";
 import { PlaybackCoordinator } from "./playback-integration.js";
 // TANGO_DIRECTOR_PATCH_V1
 import { createTangoDirector } from "./tango-director.mjs";
-import { computeMusicIntent, createMusicIntentState, formatMusicDiagnostic, sampleProfile, validateMusicConfig } from "./music-intent.js";
+import { validateMusicConfig } from "./music-intent.js";
 
 const argumentsList = process.argv.slice(2);
 const diagnosticMode = argumentsList.includes("--diagnose");
-const tangoDirectorEnabled = argumentsList.includes("--tango-director");
 const configArgument = argumentsList.find(argument => !argument.startsWith("--"));
 const CONFIG_PATH = new URL(configArgument ?? "./config.json", `file://${process.cwd()}/`);
 const UDMX_SET_CHANNEL_RANGE = 0x02;
@@ -924,7 +922,7 @@ function createExternalMasterMonitor(config, states, mode) {
 function fixtureOutput(config, states, state, now, controls) {
     const controllingState = pairLeader(states, state);
     let hue = controllingState.staticHue ?? transitionHue(controllingState.transition, now);
-    const music = controllingState.staticHue === null ? controls.outputMusicIntent ?? controls.musicIntent : null;
+    const music = controllingState.staticHue === null ? controls.outputMusicIntent ?? controls.musicIntent : null; // Only populated by compatibility tests; runtime uses tangoLook.
     if (controls.tangoLook && controllingState.staticHue === null) {
       // Master mode shares one trajectory; individual mode uses independent
       // fixture-id-keyed trajectories without assuming anything about venue position.
@@ -1600,11 +1598,10 @@ async function main() {
   process.once("SIGTERM", () => void stop("SIGTERM"));
 
   const controls = { masterBrightness: config.masterBrightness, mode, musicIntent: null, tangoBackgroundBrightness: null };
-  const musicState = createMusicIntentState();
   let tangoProfile = null;
   let tangoDirector = null;
   let tangoLastScene = null;
-  if(tangoDirectorEnabled) console.log("Experimental tango director ENABLED; original renderer available without --tango-director");
+  console.log("Tango director ENABLED (the only music lighting engine)");
   webServer = createWebServer(config, states, mode, controls, externalMaster, transport, playback);
   webServer.listen(config.webPort, "0.0.0.0", () => {
     console.log(`Lighting controls: http://localhost:${config.webPort}`);
@@ -1612,7 +1609,6 @@ async function main() {
   const frameMs = 1000 / config.fps;
   let nextFrame = performance.now();
   let previousFrame = nextFrame;
-  let musicWasDriving = false;
   let loggedMusicSession = null;
   let loggedMusicSecond = null;
   let tableMusicMasterActive = false;
@@ -1622,81 +1618,51 @@ async function main() {
     try {
       const musicCanDrive = config.music.enabled;
       const musicPosition = playback.position(now, config.music.avDelayMs);
-      if (musicCanDrive && playback.snapshot.status === "PAUSED") {
-        freezeAutomaticTransitions(states, mode, Math.max(0, now - previousFrame));
-      }
+      // The ordinary wander clock always advances, including when paused or silent.
       updateMode(config, states, mode, now);
-      const musicRelease = playback.snapshot.status === "NO_TRACK"
-        ? playback.release(now, config.music.activationBlendSeconds) : 0;
-      if (musicCanDrive && playback.snapshot.profile && (["READY", "PAUSED"].includes(playback.snapshot.status) || musicRelease > 0)) {
-        const nextIntent = computeMusicIntent(
-          playback.snapshot.profile,
-          musicPosition,
-          config.music,
-          musicState,
-          now / 1000,
-          playback.snapshot.status === "NO_TRACK" ? musicRelease : playback.activation(now, config.music.activationBlendSeconds)
-        );
-        if (nextIntent) {
-          Object.assign(musicState, nextIntent);
-          controls.musicIntent = nextIntent;
-          const canDriveHue = musicCanDriveHue(config, mode, playback.snapshot.status, musicRelease);
-          if (!canDriveHue && musicWasDriving) releaseMusicTransitions(config, states, mode, now);
-          if(tangoDirectorEnabled && playback.snapshot.status === "READY") {
-            if(tangoProfile !== playback.snapshot.profile) {
-              tangoProfile = playback.snapshot.profile;
-              tangoDirector = createTangoDirector(tangoProfile, config.music, states.map(state=>state.fixture.id));
-              tangoLastScene = null;
-            }
-            controls.tangoLook = tangoDirector(musicPosition, config.music);
-            controls.tangoBackgroundBrightness = null;
-            if(controls.tangoLook && controls.tangoLook.scene !== tangoLastScene) {
-              console.log(`[TANGO] ${musicPosition.toFixed(1)}s ${controls.tangoLook.explanation}`);
-              tangoLastScene = controls.tangoLook.scene;
-            }
-          } else {
-            controls.tangoLook = null;
-            if(tangoDirectorEnabled && tangoProfile) controls.tangoBackgroundBrightness = config.music.minimumBrightnessPercent/100;
-          }
-          if (canDriveHue && !controls.tangoLook) applyMusicMotion(config, states, mode, now, nextIntent);
-          musicWasDriving = canDriveHue;
+      if (musicCanDrive && playback.snapshot.status === "READY" && playback.snapshot.profile) {
+        if (tangoProfile !== playback.snapshot.profile) {
+          tangoProfile = playback.snapshot.profile;
+          tangoDirector = createTangoDirector(tangoProfile, config.music, states.map(state => state.fixture.id));
+          tangoLastScene = null;
         }
-      } else if (playback.snapshot.status !== "ANALYSING") {
-        if (musicWasDriving) releaseMusicTransitions(config, states, mode, now);
-        musicWasDriving = false;
-        controls.musicIntent = null;
+        controls.tangoLook = tangoDirector(musicPosition, config.music);
+        controls.tangoBackgroundBrightness = null;
+        if (controls.tangoLook.scene !== tangoLastScene) {
+          console.log(`[TANGO] ${musicPosition.toFixed(1)}s ${controls.tangoLook.explanation}`);
+          tangoLastScene = controls.tangoLook.scene;
+        }
+      } else {
+        // No music: display the autonomous, slow, random-target wandering.
         controls.tangoLook = null;
-        if(tangoDirectorEnabled && tangoProfile) controls.tangoBackgroundBrightness = config.music.minimumBrightnessPercent/100;
-        musicState.lastAt = null;
+        controls.tangoBackgroundBrightness = null;
+        tangoLastScene = null;
       }
+      controls.musicIntent = null;
       const musicSecond = Math.floor(musicPosition);
       if (playback.snapshot.status === "READY" && playback.snapshot.profile &&
           (loggedMusicSession !== playback.snapshot.sessionId || loggedMusicSecond !== musicSecond)) {
-        const feature = controls.musicIntent?.feature ?? sampleProfile(playback.snapshot.profile, musicPosition);
-        if (feature) {
-          let line = formatMusicDiagnostic(musicPosition, feature, controls.musicIntent);
+        const directorState = controls.tangoLook;
+        if (directorState) {
+          const f = directorState.feature;
+          const look = directorState.look;
           const representative = states.find(state => !isPairFollower(state) && state.staticHue === null);
-          if (representative) {
-            const progress = transitionProgress(representative.transition, now);
-            const rendered = fixtureOutput(config, states, representative, now, controls);
-            const owner = mode.externalControlled ? "external-master" : mode.name === "master" ? "local-master"
-              : representative.transition.musicDriven ? "individual-music" : "individual-wander";
-            const finalValue = Math.round(controls.masterBrightness * (controls.musicIntent?.brightness ?? 1));
-            line += ` fixture=${representative.fixture.id} hue=${transitionHue(representative.transition, now).toFixed(1)}` +
-              ` target=${(((representative.transition.toHue % 360) + 360) % 360).toFixed(1)}` +
-              ` progress=${progress.toFixed(3)} remaining=${((1 - progress) * representative.transition.durationMs / 1000).toFixed(1)}s` +
-              ` owner=${owner} output=${finalValue}/${"brightness" in representative.fixture.type.channels ? "dimmer" : "rgb-scale"}` +
-              ` finalRGB=${rendered.values.red},${rendered.values.green},${rendered.values.blue}`;
-          }
-          console.log(line);
+          const rendered = representative ? fixtureOutput(config, states, representative, now, controls) : null;
+          console.log(`Music ${Math.floor(musicPosition / 60)}:${String(musicSecond % 60).padStart(2, "0")}` +
+            ` state=${look.musicalState} energy=${f.energy.toFixed(2)} build=${f.build.toFixed(2)}` +
+            ` rhythm=${f.rhythm.toFixed(2)} dynamics=${f.dynamics.toFixed(2)}` +
+            ` accent=${f.accent.toFixed(2)} drop=${f.activityDrop.toFixed(2)}` +
+            ` cue=${look.cue} pulse=${look.pulseStrength.toFixed(2)}` +
+            ` brightness=${look.brightness.toFixed(3)} colourSpeed=${look.colourAcceleration.toFixed(2)}x` +
+            (rendered ? ` fixture=${representative.fixture.id} finalRGB=${rendered.values.red},${rendered.values.green},${rendered.values.blue} dmxBrightness=${rendered.values.brightness}` : ""));
         }
         loggedMusicSession = playback.snapshot.sessionId;
         loggedMusicSecond = musicSecond;
       }
       const tableShouldFollowMaster = mode.name === "master";
-      const musicMasterPaused = tableShouldFollowMaster && playback.snapshot.status === "PAUSED" && controls.musicIntent;
+      const musicMasterPaused = false;
       if (tableShouldFollowMaster && !musicMasterPaused) {
-        await externalMaster.syncMusicMaster?.(mode.masterTransition, controls.musicIntent, now)
+        await externalMaster.syncMusicMaster?.(mode.masterTransition, null, now)
           .catch(error => console.warn(`Could not update table master: ${error.message}`));
         tableMusicMasterActive = true;
       } else if (musicMasterPaused) {

@@ -200,9 +200,13 @@ The page provides:
   with a brightness/dimmer channel receive this value directly; RGB-only
   fixtures have their RGB values scaled.
 
-When several fixtures are selected, applying a cortina colour sets all of them
-to the chosen RGB value. Selecting a single fixture loads its saved cortina
-colour into the picker.
+Cortina colour is applied to **every explicitly selected DMX fixture** (paired
+or not), without changing its pairing or wandering settings. The picker keeps
+the colour chosen by the operator while selection changes; it does not replace
+that colour with the first selected fixture's stored setting. Mixed selections
+that include the table-light bridge apply to the DMX fixtures only. The saved
+cortina colours are displayed when lights-up/cortina mode is active; saving a
+colour does not replace normal wandering colours.
 
 ## Fixture and channel configuration
 
@@ -554,3 +558,23 @@ opening real hardware.
 See [firmware, wiring and setup instructions](table-lights/DMX-bridge/README-esp32-c3.md)
 for the combined ESP-NOW and USB DMX bridge. Its wired and wireless outputs
 mirror the same universe, alongside any connected uDMX adapter.
+
+## Music lighting — unified director (November 2026)
+
+The tango director is now the **only active music renderer**. Start with `node lighting.js`; the former `--tango-director` flag is no longer required. Manual/static fixture settings and lights-up continue to take priority.
+
+While the playback coordinator reports `READY`, the director provides individual or master hue trajectories, rhythmic accent brightness pulses, activity-drop effects and feature-derived cues. Brightness accents use a bell-shaped Gaussian envelope with a 0.5-second window centred on the detected accent. Because the music is analysed before playback, a pulse can begin before the accent and peak on it. A pulse is also allowed during high-energy/build passages instead of being limited to idle gaps.
+
+When music is paused, disabled or absent, the fixtures continue their independent, slow autonomous wandering with randomly chosen targets and travel times (the normal `transitionSeconds` configuration applies, currently 8–40 seconds). Playback pause no longer freezes the ordinary wandering clock. The legacy music-intent motion functions remain in the source only for compatibility with existing repository tests; they are not selected as an alternative live music engine.
+
+Once-per-second `Music` logs now distinguish feature-derived musical state, accent and activity-drop levels, the director's actual cue, pulse amplitude, requested brightness, speed multiplier and emitted RGB. `kick=none` from the older renderer is no longer printed as the live music response.
+
+**Important:** These changes have been tested with automated tests and JavaScript syntax checks, not with the physical DMX bridge or fixtures. Check brightness range and photosensitivity concerns before use around dancers.
+
+### End-of-track silence detection
+
+The analyser now measures short-time **raw RMS** to detect a sustained final near-silent tail relative to the late recording's level and noise floor. `finalSilenceStartSeconds` is included in the analysis profile (or `null` when there is no reliable ending silence). Musical colour nudges, accents and activity-drop pulses stop at this detected boundary, not three seconds before the end. Slow wandering continues. The last chord remains eligible for music cues until the detected silence starts. This is a heuristic: a very noisy transfer or a cut-off recording may have no detectable final silence; in that case cues remain enabled to the end.
+
+### Activity drops and final endings (latest update)
+
+The director no longer turns activity-drop measurements into brightness pulses. End-of-track decays are especially prone to false dramatic events. A terminal collapse in musical energy is used **only as a veto** on new accent and colour nudge cues; it does not itself emit a cue. The detector prefers the analysed near-silent-tail onset when available, and otherwise looks for a sharp energy collapse sustained into the final part of the track. This is not an arbitrary three-second blackout. High-energy development and normal wandering remain active until the drop, and build continues to influence wandering speed. The `activityDrop` trace remains in analysis for diagnostics, but its effect count is zero.
