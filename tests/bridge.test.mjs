@@ -430,3 +430,26 @@ test('calibration pulse overrides every DMX fixture with one full-brightness col
     if (channels.brightness) assert.equal(blackout[start + channels.brightness - 1], 0);
   }
 });
+
+
+test('combined bridge shares USB for DMX and table control, gates legacy firmware, and rejects stale connections', async () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const monitor = h.api.createExternalMasterMonitor(config, [], h.api.createModeState(config, 0));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(monitor.openDmxTransport(), null);
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0}');
+  assert.equal(monitor.openDmxTransport(), null);
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0,"dmxProtocol":1}');
+  const output = monitor.openDmxTransport();
+  await output.send(Buffer.from([255, 165, 90, 10]));
+  assert.deepEqual(h.port().writes.at(-1), encodeBridgeDmx(Buffer.from([255, 165, 90, 10])));
+  await monitor.setTableColour(120);
+  await output.send(Buffer.from([50]));
+  assert.equal(h.port().writes.at(-2), 'STATIC 120\n');
+  await output.close();
+  assert.ok(h.port().isOpen, 'output wrapper must not close the shared port');
+  await monitor.close();
+  await assert.rejects(output.send(Buffer.alloc(512)), /disconnected/);
+  assert.equal(monitor.openDmxTransport(), null);
+});

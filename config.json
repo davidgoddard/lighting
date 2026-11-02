@@ -101,9 +101,9 @@
       "address": 1,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 244,
+        "blue": 229
       }
     },
     {

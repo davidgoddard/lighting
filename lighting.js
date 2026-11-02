@@ -1,3 +1,4 @@
+import { encodeBridgeDmx } from "./bridge-dmx.js";
 import { createDmxOutputs } from "./dmx-outputs.js";
 import { encodeBridgeDmx } from "./bridge-dmx.js";
 import { readFile, writeFile } from "node:fs/promises";
@@ -750,7 +751,10 @@ function createExternalMasterMonitor(config, states, mode) {
         clearInterval(handshakeTimer);
         handshakeTimer = null;
         if (port === candidate) port = null;
+        clearInterval(handshakeTimer);
         tableState = null;
+        musicMaster = null;
+        lastMusicCommandAt = -Infinity;
         lastFollowHue = null;
         musicMaster = null;
         lastMusicCommandAt = -Infinity;
@@ -775,6 +779,7 @@ function createExternalMasterMonitor(config, states, mode) {
           scheduleScan();
           return;
         }
+        if (stopped) { candidate.close(() => {}); return; }
         mode.externalConnected = true;
         mode.externalControlled = true;
         mode.externalHasMessage = false;
