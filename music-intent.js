@@ -18,7 +18,11 @@ export const DEFAULT_MUSIC_CONFIG = Object.freeze({
   tangoColourChangeSensitivity: .45,
   tangoAccentFallbackDelaySeconds: 1,
   tangoEventSensitivity: .49,
-  tangoEventMinimumSpacingSeconds: 3,
+  tangoMinimumHueDisplacementDegrees: 55,
+  tangoSpeedBoostMultiplier: 6,
+  tangoSpeedBoostDecayMs: 1200,
+  tangoMaximumSpeedMultiplier: 18,
+  tangoPulseDelayMs: 200,
   structureEffectsEnabled: true,
   avDelayMs: 0
 });
@@ -31,7 +35,9 @@ export function validateMusicConfig(source = {}) {
     movementRelaxationMs: [400, 5000], colourStepSpeedPercent: [25, 400],
     exceptionalKickThresholdPercent: [20, 100], exceptionalKickColourTimeMs: [250, 1400],
     tangoColourChangeSensitivity: [.2, .95], tangoAccentFallbackDelaySeconds: [0, 20],
-    tangoEventSensitivity: [.25, .9], tangoEventMinimumSpacingSeconds: [1, 15], avDelayMs: [0, 4000]
+    tangoEventSensitivity: [.25, .9], tangoMinimumHueDisplacementDegrees: [30, 150],
+    tangoSpeedBoostMultiplier: [1, 12], tangoSpeedBoostDecayMs: [100, 5000],
+    tangoMaximumSpeedMultiplier: [2, 40], tangoPulseDelayMs: [-500, 500], avDelayMs: [0, 4000]
   };
   if (typeof config.enabled !== "boolean" || typeof config.structureEffectsEnabled !== "boolean") {
     throw new Error("music toggles must be true or false");

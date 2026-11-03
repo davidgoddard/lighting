@@ -23,12 +23,18 @@ const musicInputs = {
   tangoColourChangeSensitivity: document.querySelector("#music-change-sensitivity"),
   tangoAccentFallbackDelaySeconds: document.querySelector("#music-accent-delay"),
   tangoEventSensitivity: document.querySelector("#music-event-sensitivity"),
-  tangoEventMinimumSpacingSeconds: document.querySelector("#music-event-spacing"),
+  tangoMinimumHueDisplacementDegrees: document.querySelector("#music-min-hue"),
+  tangoSpeedBoostMultiplier: document.querySelector("#music-speed-boost"),
+  tangoSpeedBoostDecayMs: document.querySelector("#music-boost-decay"),
+  tangoMaximumSpeedMultiplier: document.querySelector("#music-speed-cap"),
+  tangoPulseDelayMs: document.querySelector("#music-pulse-delay"),
   avDelayMs: document.querySelector("#music-delay")
 };
 const musicDefaults = { enabled: false, minimumBrightnessPercent: 62, maximumBrightnessPercent: 100,
   tangoColourChangeSensitivity: .45, tangoAccentFallbackDelaySeconds: 1,
-  tangoEventSensitivity: .49, tangoEventMinimumSpacingSeconds: 3, avDelayMs: 0 };
+  tangoEventSensitivity: .49, tangoMinimumHueDisplacementDegrees: 55,
+  tangoSpeedBoostMultiplier: 6, tangoSpeedBoostDecayMs: 1200,
+  tangoMaximumSpeedMultiplier: 18, tangoPulseDelayMs: 200, avDelayMs: 0 };
 let fixtures = [];
 let hue = 0;
 let dragging = false;
@@ -38,6 +44,15 @@ let staticUpdatePending = false;
 let brightnessTimer;
 let lightsUp = false;
 let musicSaveTimer;
+
+function formatMusicControl(name, value) {
+  if (name === "avDelayMs" || name === "tangoPulseDelayMs" || name === "tangoSpeedBoostDecayMs") return `${value} ms`;
+  if (name === "tangoMinimumHueDisplacementDegrees") return `${value}°`;
+  if (name === "tangoSpeedBoostMultiplier" || name === "tangoMaximumSpeedMultiplier") return `×${value}`;
+  if (name.endsWith("Seconds")) return `${value} s`;
+  if (["tangoColourChangeSensitivity", "tangoEventSensitivity"].includes(name)) return Number(value).toFixed(2);
+  return `${value}%`;
+}
 
 function renderMusic(music) {
   if (!music) return;
@@ -49,9 +64,7 @@ function renderMusic(music) {
   for (const [name, input] of Object.entries(musicInputs)) {
     const value = music.config[name]; if (input.type === "checkbox") input.checked = Boolean(value); else input.value = String(value);
     const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = name.endsWith("Seconds") ? `${value} s`
-      : name === "avDelayMs" ? `${value} ms`
-        : ["tangoColourChangeSensitivity","tangoEventSensitivity"].includes(name) ? Number(value).toFixed(2) : `${value}%`;
+    if (output) output.textContent = formatMusicControl(name, value);
   }
   const feature = music.director?.feature ?? music.intent?.feature;
   document.querySelector("#music-features").textContent = feature
@@ -65,7 +78,7 @@ function renderMusic(music) {
   document.querySelector("#music-output").textContent = music.director
     ? `Brightness ${Math.round(music.director.brightness * 100)}% · colour ×${music.director.colourAcceleration.toFixed(1)}` +
       ` · ${music.director.cue ?? "Wandering"} · ${music.director.colourCueCount ?? 0} colour changes` +
-      ` · ${music.director.activityDropCount ?? 0} activity drops${timing}${analysis}`
+      ` · boost ×${(music.director.speedBoost ?? 1).toFixed(1)}${timing}${analysis}`
     : music.intent
     ? `Value ${Math.round(music.intent.brightness * 100)}% · character ${Math.round(music.intent.character * 100)}%` +
       ` · ${music.intent.stepRate.toFixed(2)} colour steps/s · ${music.intent.structure.mode}` +
@@ -76,9 +89,7 @@ function renderMusic(music) {
 function scheduleMusicSave() {
   for (const [name, input] of Object.entries(musicInputs)) {
     const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = name.endsWith("Seconds") ? `${input.value} s`
-      : name === "avDelayMs" ? `${input.value} ms`
-        : ["tangoColourChangeSensitivity","tangoEventSensitivity"].includes(name) ? Number(input.value).toFixed(2) : `${input.value}%`;
+    if (output) output.textContent = formatMusicControl(name, input.value);
   }
   clearTimeout(musicSaveTimer);
   musicSaveTimer = setTimeout(async () => {

@@ -10,6 +10,7 @@ import { createAudioAnalyser } from "./audio-analysis.js";
 import { PlaybackCoordinator } from "./playback-integration.js";
 // TANGO_DIRECTOR_PATCH_V1
 import { createTangoDirector } from "./tango-director.mjs";
+import { hueOffsets, offsetHue } from "./music-handoff.mjs";
 import { validateMusicConfig } from "./music-intent.js";
 
 const argumentsList = process.argv.slice(2);
@@ -354,6 +355,7 @@ function createModeState(config, now) {
     externalHasMessage: false,
     externalPort: null,
     lightsUp: false,
+    lightsUpLastCommand: { up: false, source: "initial", at: new Date().toISOString() },
     lightsUpTransition: { from: 0, to: 0, startedAt: now, durationMs: 0 }
   };
 }
@@ -365,9 +367,10 @@ function lightsUpLevel(mode, now) {
   return transition.from + (transition.to - transition.from) * progress;
 }
 
-function setLightsUp(config, mode, up, now = performance.now()) {
+function setLightsUp(config, mode, up, now = performance.now(), source = "unknown") {
   const next = Boolean(up);
   if (mode.lightsUp === next) return false;
+  mode.lightsUpLastCommand = { up: next, source, at: new Date().toISOString() };
   const durationSeconds = next ? config.lightsUp.fadeUpSeconds : config.lightsUp.fadeDownSeconds;
   mode.lightsUpTransition = {
     from: lightsUpLevel(mode, now),
@@ -377,7 +380,7 @@ function setLightsUp(config, mode, up, now = performance.now()) {
   };
   mode.lightsUp = next;
   mode.broadcastLightsUp?.({ up: next, durationMs: mode.lightsUpTransition.durationMs });
-  console.log(`Lights ${next ? "up" : "down"}; fading over ${durationSeconds.toFixed(1)} seconds.`);
+  console.log(`Lights ${next ? "up" : "down"} from ${source}; fading over ${durationSeconds.toFixed(1)} seconds.`);
   return true;
 }
 
@@ -726,11 +729,11 @@ function createExternalMasterMonitor(config, states, mode) {
         }
         const normalized = line.toLowerCase().replace(/[\s_-]+/g, "");
         if (["1", "up", "lightsup"].includes(normalized)) {
-          setLightsUp(config, mode, true);
+          setLightsUp(config, mode, true, performance.now(), "ESP32 bridge serial");
           return;
         }
         if (["0", "down", "lightsdown"].includes(normalized)) {
-          setLightsUp(config, mode, false);
+          setLightsUp(config, mode, false, performance.now(), "ESP32 bridge serial");
           return;
         }
         const message = parseExternalMasterMessage(line);
@@ -927,8 +930,12 @@ function fixtureOutput(config, states, state, now, controls) {
       // Master mode shares one trajectory; individual mode uses independent
       // fixture-id-keyed trajectories without assuming anything about venue position.
       const look = controls.tangoLook.look;
-      hue = controls.mode?.name === "individual"
+      const individual = controls.mode?.name === "individual";
+      const directedHue = individual
         ? look.fixtureHues?.[controllingState.fixture.id] ?? look.hue : look.hue;
+      hue = offsetHue(directedHue, individual
+        ? controls.tangoHueOffsets?.[controllingState.fixture.id] ?? 0
+        : controls.tangoHueOffsets?.master ?? 0);
       const channels = state.fixture.type?.channels ?? {};
       const hasDimmer = "brightness" in channels;
       const minimum = config.music.minimumBrightnessPercent / 100;
@@ -1219,6 +1226,8 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
           masterBrightness: controls.masterBrightness,
           calibration: { active: controls.calibration.active, delayMs: config.music.avDelayMs },
           lightsUp: mode.lightsUp,
+          lightsUpFadeLevel: mode.lightsUpTransition ? lightsUpLevel(mode, now) : Number(Boolean(mode.lightsUp)),
+          lightsUpLastCommand: mode.lightsUpLastCommand,
           music: {
             config: config.music,
             status: playback.snapshot.status,
@@ -1243,6 +1252,8 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
             director: controls.tangoLook ? {
               brightness: controls.tangoLook.look.brightness,
               colourAcceleration: controls.tangoLook.look.colourAcceleration,
+              speedBoost: controls.tangoLook.look.speedBoost,
+              speedEventCount: controls.tangoLook.look.speedEventCount,
               emphasis: controls.tangoLook.look.accent,
               feature: controls.tangoLook.feature,
               cue: controls.tangoLook.look.cue,
@@ -1301,7 +1312,7 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
       if (request.method === "POST" && url.pathname === "/api/lights") {
         const body = await readJson(request);
         if (typeof body.up !== "boolean") fail("up must be true or false");
-        setLightsUp(config, mode, body.up);
+        setLightsUp(config, mode, body.up, performance.now(), "web /api/lights");
         const forwarded = await externalMaster.sendLightsUp(body.up).catch(error => {
           console.warn(`Could not forward lights state to ESP: ${error.message}`);
           return false;
@@ -1318,13 +1329,16 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
       }
       if (request.method === "POST" && url.pathname === "/api/music") {
         const body = await readJson(request);
-        const reanalyseRequested = ["tangoColourChangeSensitivity", "tangoAccentFallbackDelaySeconds",
-          "tangoEventSensitivity", "tangoEventMinimumSpacingSeconds"]
-          .some(name => body[name] !== undefined && Number(body[name]) !== config.music[name]);
+        // Director controls change the lighting interpretation, not the audio
+        // analysis. Rebuild the deterministic lane frames without re-decoding.
+        const directorKeys = ["tangoColourChangeSensitivity", "tangoAccentFallbackDelaySeconds",
+          "tangoEventSensitivity", "tangoMinimumHueDisplacementDegrees", "tangoSpeedBoostMultiplier",
+          "tangoSpeedBoostDecayMs", "tangoMaximumSpeedMultiplier"];
+        const directorChanged = directorKeys.some(name => body[name] !== undefined && Number(body[name]) !== config.music[name]);
         config.music = validateMusicConfig({ ...config.music, ...body });
         await persistMusicConfig(config.music);
-        const reanalysing = reanalyseRequested && playback.reanalyse();
-        json(response, 200, { music: config.music, status: playback.snapshot.status, reanalysing });
+        if (directorChanged) controls.directorRevision = (controls.directorRevision ?? 0) + 1;
+        json(response, 200, { music: config.music, status: playback.snapshot.status, reanalysing: false });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/calibration") {
@@ -1600,7 +1614,11 @@ async function main() {
   const controls = { masterBrightness: config.masterBrightness, mode, musicIntent: null, tangoBackgroundBrightness: null };
   let tangoProfile = null;
   let tangoDirector = null;
+  let tangoDirectorRevision = -1;
   let tangoLastScene = null;
+  let directorWasActive = false;
+  let brightnessHandoff = null;
+  let lastMusicBrightness = null;
   console.log("Tango director ENABLED (the only music lighting engine)");
   webServer = createWebServer(config, states, mode, controls, externalMaster, transport, playback);
   webServer.listen(config.webPort, "0.0.0.0", () => {
@@ -1621,21 +1639,71 @@ async function main() {
       // The ordinary wander clock always advances, including when paused or silent.
       updateMode(config, states, mode, now);
       if (musicCanDrive && playback.snapshot.status === "READY" && playback.snapshot.profile) {
-        if (tangoProfile !== playback.snapshot.profile) {
+        if (tangoProfile !== playback.snapshot.profile || tangoDirectorRevision !== (controls.directorRevision ?? 0) || !directorWasActive) {
+          // Capture the *visible* hues (including any previous director offset)
+          // before constructing the new track's unrelated random trajectories.
+          const visible = Object.fromEntries(states.map(state => [state.fixture.id,
+            fixtureOutput(config, states, state, now, controls).hue]));
+          const masterVisible = states.find(state => !isPairFollower(state) && state.staticHue === null);
+          if (masterVisible) visible.master = fixtureOutput(config, states, masterVisible, now, controls).hue;
           tangoProfile = playback.snapshot.profile;
           tangoDirector = createTangoDirector(tangoProfile, config.music, states.map(state => state.fixture.id));
+          const incoming = tangoDirector(musicPosition, config.music).look;
+          controls.tangoHueOffsets = hueOffsets(visible, {
+            ...incoming.fixtureHues, master: incoming.hue
+          });
+          tangoDirectorRevision = controls.directorRevision ?? 0;
           tangoLastScene = null;
+          brightnessHandoff = { from: lastMusicBrightness ?? controls.tangoBackgroundBrightness ?? 1, startedAt: now };
+          console.log(`Music hue handoff: preserving displayed colours at ${musicPosition.toFixed(2)}s`);
         }
         controls.tangoLook = tangoDirector(musicPosition, config.music);
+        // Keep brightness continuous as the new track's energy envelope begins.
+        // This is a slow settling of ambience, never a terminal-drop cue.
+        if (brightnessHandoff) {
+          const progress = Math.min(1, Math.max(0, (now - brightnessHandoff.startedAt) / 1500));
+          const easing = progress * progress * (3 - 2 * progress);
+          const next = controls.tangoLook.look.brightness;
+          controls.tangoLook.look.brightness = brightnessHandoff.from + (next - brightnessHandoff.from) * easing;
+          if (progress >= 1) brightnessHandoff = null;
+        }
+        lastMusicBrightness = controls.tangoLook.look.brightness;
+        directorWasActive = true;
         controls.tangoBackgroundBrightness = null;
         if (controls.tangoLook.scene !== tangoLastScene) {
           console.log(`[TANGO] ${musicPosition.toFixed(1)}s ${controls.tangoLook.explanation}`);
           tangoLastScene = controls.tangoLook.scene;
         }
       } else {
-        // No music: display the autonomous, slow, random-target wandering.
+        if (directorWasActive) {
+          // Give ordinary wandering the last visible musical colour as its
+          // starting point. Never reset at song end, during silence or pause.
+          // Each fixture chooses a fresh slow destination, not a sudden jump.
+          const leaders = states.filter(state => !isPairFollower(state) && state.staticHue === null);
+          if (mode.name === "master") {
+            const leader = leaders[0];
+            if (leader) {
+              const from = fixtureOutput(config, states, leader, now, controls).hue;
+              mode.masterTransition = newMasterTransition(config, from, now);
+              for (const state of leaders) {
+                state.transition = transitionTo(from, mode.masterTransition.toHue,
+                  mode.masterTransition.durationMs / 1000, now);
+                announceTransition(mode, state, now);
+              }
+            }
+          } else {
+            for (const state of leaders) {
+              const from = fixtureOutput(config, states, state, now, controls).hue;
+              state.transition = newIndividualTransition(config, from, now);
+              announceTransition(mode, state, now);
+            }
+          }
+          console.log("Music ended/paused: continuing wandering from the displayed colours");
+        }
+        if (directorWasActive) controls.tangoBackgroundBrightness = lastMusicBrightness;
+        directorWasActive = false;
         controls.tangoLook = null;
-        controls.tangoBackgroundBrightness = null;
+        controls.tangoHueOffsets = null;
         tangoLastScene = null;
       }
       controls.musicIntent = null;
@@ -1654,6 +1722,7 @@ async function main() {
             ` accent=${f.accent.toFixed(2)} drop=${f.activityDrop.toFixed(2)}` +
             ` cue=${look.cue} pulse=${look.pulseStrength.toFixed(2)}` +
             ` brightness=${look.brightness.toFixed(3)} colourSpeed=${look.colourAcceleration.toFixed(2)}x` +
+            ` boost=${look.speedBoost.toFixed(2)}x` +
             (rendered ? ` fixture=${representative.fixture.id} finalRGB=${rendered.values.red},${rendered.values.green},${rendered.values.blue} dmxBrightness=${rendered.values.brightness}` : ""));
         }
         loggedMusicSession = playback.snapshot.sessionId;

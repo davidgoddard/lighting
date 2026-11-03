@@ -19,7 +19,7 @@ test("prototype control defaults and ranges are preserved", () => {
   assert.throws(() => validateMusicConfig({ movementRelaxationMs: 300 }));
   assert.equal(validateMusicConfig({ minimumBrightnessPercent: 100, maximumBrightnessPercent: 100 }).minimumBrightnessPercent, 100);
   const tango=validateMusicConfig({tangoColourChangeSensitivity:.45,tangoAccentFallbackDelaySeconds:1,
-    tangoEventSensitivity:.49,tangoEventMinimumSpacingSeconds:3});
+    tangoEventSensitivity:.49,tangoMinimumHueDisplacementDegrees:55,tangoSpeedBoostDecayMs:1200});
   assert.equal(tango.tangoColourChangeSensitivity,.45);
   assert.equal(tango.tangoAccentFallbackDelaySeconds,1);
 });

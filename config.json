@@ -40,7 +40,7 @@
   },
   "music": {
     "enabled": true,
-    "minimumBrightnessPercent": 65,
+    "minimumBrightnessPercent": 88,
     "maximumBrightnessPercent": 100,
     "gamma": 1.05,
     "rhythmicMomentumInfluencePercent": 185,
@@ -49,12 +49,17 @@
     "colourStepSpeedPercent": 161,
     "exceptionalKickThresholdPercent": 53,
     "exceptionalKickColourTimeMs": 1400,
-    "tangoColourChangeSensitivity": 0.95,
-    "tangoAccentFallbackDelaySeconds": 0,
-    "tangoEventSensitivity": 0.28,
-    "tangoEventMinimumSpacingSeconds": 1,
+    "tangoColourChangeSensitivity": 0.28,
+    "tangoAccentFallbackDelaySeconds": 4,
+    "tangoEventSensitivity": 0.25,
+    "tangoMinimumHueDisplacementDegrees": 105,
+    "tangoSpeedBoostMultiplier": 7,
+    "tangoSpeedBoostDecayMs": 2000,
+    "tangoMaximumSpeedMultiplier": 12,
+    "tangoPulseDelayMs": 200,
     "structureEffectsEnabled": true,
     "avDelayMs": 0,
+    "tangoEventMinimumSpacingSeconds": 1,
     "activationBlendSeconds": 3
   },
   "webPort": 8080,
@@ -102,8 +107,8 @@
       "type": "4ch-rgbw",
       "lightsUpColour": {
         "red": 255,
-        "green": 244,
-        "blue": 229
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -112,9 +117,9 @@
       "address": 11,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -123,9 +128,9 @@
       "address": 21,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -134,9 +139,9 @@
       "address": 31,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -145,9 +150,9 @@
       "address": 41,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -156,9 +161,9 @@
       "address": 51,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -167,9 +172,9 @@
       "address": 61,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -178,9 +183,9 @@
       "address": 71,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -189,9 +194,9 @@
       "address": 81,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -200,9 +205,9 @@
       "address": 91,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -211,9 +216,9 @@
       "address": 101,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -222,9 +227,9 @@
       "address": 111,
       "type": "4ch-rgbw",
       "lightsUpColour": {
-        "red": 46,
-        "green": 81,
-        "blue": 255
+        "red": 255,
+        "green": 254,
+        "blue": 245
       }
     },
     {
@@ -234,8 +239,8 @@
       "type": "8ch-dimmer-rgbw",
       "lightsUpColour": {
         "red": 255,
-        "green": 251,
-        "blue": 229
+        "green": 254,
+        "blue": 245
       }
     }
   ]

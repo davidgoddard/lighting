@@ -453,3 +453,24 @@ test('combined bridge shares USB for DMX and table control, gates legacy firmwar
   await assert.rejects(output.send(Buffer.alloc(512)), /disconnected/);
   assert.equal(monitor.openDmxTransport(), null);
 });
+
+test('lights-up state retains full fade level and cortina RGB after the fade finishes', async () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const now = performance.now();
+  const mode = h.api.createModeState(config, now);
+  const fixture = config.fixtures[0];
+  const state = h.api.createFixtureState(config, fixture, now);
+  mode.lightsUp = true;
+  mode.lightsUpTransition = { from: 0, to: 1, startedAt: now - 6000, durationMs: 3000 };
+  mode.lightsUpLastCommand = { up:true, source:'web /api/lights', at:'test' };
+  h.api.createWebServer(config, [state], mode, { masterBrightness:255 }, { tableFixture:()=>[] });
+  const result = await h.request('/api/state');
+  assert.equal(result.status, 200);
+  assert.equal(result.result.lightsUp, true);
+  assert.equal(result.result.lightsUpFadeLevel, 1);
+  assert.equal(result.result.lightsUpLastCommand.source, 'web /api/lights');
+  assert.equal(result.result.fixtures[0].finalRgb.red, fixture.lightsUpColour.red);
+  assert.equal(result.result.fixtures[0].finalRgb.green, fixture.lightsUpColour.green);
+  assert.equal(result.result.fixtures[0].finalRgb.blue, fixture.lightsUpColour.blue);
+});

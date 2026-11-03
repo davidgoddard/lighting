@@ -1,10 +1,13 @@
 # Lighting controller
 
-Lighting is a small Node.js application that drives room lighting through USB
-DMX adapters. It gives configured RGB fixtures continuously wandering colours,
-provides a browser control page, coordinates with an optional ESP table-lights
-bridge, and raises the room lights automatically while Tanda Forge plays a
-cortina.
+Lighting is a **dual-mode Node.js lighting application for one DMX universe**.
+It works independently as an ambient lighting controller, or as a companion to
+**Tanda Forge** on the same computer. Rather than a prescriptive beat-synchronised
+light show, it loosely reflects the music's intensity and changes in character
+by modifying smooth colour transitions. A browser page controls the fixtures
+manually, and an optional bridge coordinates ESP table lights. Tanda Forge also
+notifies Lighting when a cortina plays, allowing the room to adopt selected
+cortina colours to support **cabeceo** (making eye contact to invite a dance).
 
 The controller can send the same DMX universe to one or both supported USB
 adapter types:
@@ -34,97 +37,123 @@ smooth 2–10 second departure; ordinary individual wandering begins only after
 that departure completes. These ranges are configurable as
 `masterMode.entryTransitionSeconds` and `masterMode.exitTransitionSeconds`.
 
-## Music-aware DMX mode
+## Two operating modes
 
-Tanda Forge posts versioned snapshots of its main-output playback to
-`POST /api/playback`. Lighting reacts only to normal tango playback on that
-output. Headphone previews never drive the lights, and cortinas continue to use
-the higher-priority lights-up behavior.
+![Standalone and Tanda Forge operating paths](docs/images/operating-modes.svg)
 
-Music mode defaults to disabled when the `music` section is absent or uses
-`"enabled": false`; the supplied venue `config.json` enables it. Enabling it
-affects automatic DMX fixtures only. Static colours, explicit lights-up,
-fixture pairing, master mode, global brightness, and fixture mappings keep
-their existing priority. Table lights do not receive audio or brightness data;
-in master mode they receive only shared hue targets and transition durations
-derived from the same analysed musical events.
+### 1. Standalone ambient lighting
 
-### Momentum algorithm
+With Tanda Forge absent, unavailable, stopped or paused, each automatic DMX
+fixture continues **wandering**: choose a target hue and a random duration, move
+smoothly towards it, then choose another target and duration. This runs at a
+restrained baseline speed even without music. Fixtures can be manually held at a
+static hue, paired to follow a leader, or selected in groups; the normal colour
+wheel and **Resume wandering** commands operate independently of Tanda Forge.
 
-Lighting directly ports the `tango-light-momentum-edges-prototype` analysis and
-render formulas. FFmpeg decodes mono 11,025 Hz audio in a worker. Overlapping
-1,024-sample FFT windows advance by 256 samples (about 23 ms), producing
-track-relative fast and phrase energy, development, three-band attacks, rolling
-3.5-second rhythmic momentum, exceptional hits, relative breaks, entrances and
-sudden START/STOP edges. Analysis never runs in the 40 FPS DMX loop.
+### 2. Music-responsive lighting with Tanda Forge
 
-Every automatic DMX fixture has its own hue, target and progress accumulator.
-The shared musical step rate advances those independent trajectories; completed
-steps choose new random full-wheel destinations. High character raises the
-minimum destination distance from 35° to 85°. Ordinary notes do not flash
-brightness. Phrase brightness uses the prototype's exact formula and attack /
-release smoothing at 97% saturation.
+When Tanda Forge plays a normal track on its main output, it sends playback
+snapshots to `POST /api/playback`. Lighting analyses the whole track once and
+uses the current playback position to evaluate a **single tango director**.
+It adjusts the ongoing wandering rather than replacing it with a beat-chasing
+sequence. The director can accelerate colour travel during builds, briefly
+increase travel speed around salient events, nudge hue at significant changes,
+and introduce restrained, rounded brightness accents. There is no separate
+legacy music renderer or special `--tango-director` startup flag.
 
-Exceptional hits are accepted only above the track's phrase-energy upper
-percentile, with high fast energy, rhythmic momentum and the configured
-threshold. They have a four-second cooldown and send every automatic fixture
-to its own target at least 100° away using the configured eased kick time.
-START/STOP, entrance and break envelopes use the prototype's exact brightness
-offsets and colour-speed factors. Seeking suppresses crossed events; pausing
-freezes progress.
+The director avoids turning the final collapse into silence into a lighting
+cue. When one song finishes, the **currently displayed hue is carried into
+ordinary wandering**, and when another music profile becomes active it starts
+from those displayed hues. There is no intentional colour reset at the track
+boundary; transitions continue through a gap in playback. Static/manual
+colours, lights-up/cortina, pairing and the global master brightness still take
+priority over automatic music effects.
 
-Manual/static colours, cortina/lights-up, master brightness, fixture channel
-mappings and pairing retain priority. Browser indicators consume the final RGB
-values produced by the same renderer as DMX.
+### How the analysis works (no trained model)
 
-Whenever master mode is active, every automatic DMX fixture uses one shared
-trajectory and the table lights receive that same target hue and remaining
-transition duration. This begins immediately even if music analysis is still
-pending or music response is disabled. The application sends a new bridge
-destination only when the target or a relevant structural state changes, with
-a minimum 180 ms command interval; it does not transmit on every 40 FPS DMX
-frame. A music pause sends a long-duration hold. Master exit or bridge
-disconnection returns the table lights to autonomous wandering; lights-up /
-cortina temporarily overrides colour through the existing bridge command.
-Table-light brightness is otherwise unchanged.
+FFmpeg decodes a mono 11,025 Hz signal in a worker thread. A 2,048-point
+windowed FFT is evaluated every 512 samples (about 46 ms). Noise-floor-adjusted
+spectra supply spectral-flux onsets, lower-frequency energy, spectral
+brightness and 12-bin chroma (pitch-class) features; short-time RMS supplies
+energy. Smoothed differences over short and longer time windows produce
+separate **rhythm, dynamics, harmony and timbre change** measurements.
+Onset activity, locally contrasting attacks, an approximately five-second
+energy **build** and combined **salience** are also measured. Feature traces
+are sampled onto a 0.2-second grid for deterministic playback evaluation.
 
-### Music controls
+![From FFT-derived audio features to lighting behaviour](docs/images/audio-to-light.svg)
 
-The web page exposes the prototype controls. Their application defaults are:
+The features describe changes in the *recorded audio*, not identified notes,
+singers, bars or formal musical phrases. The measurements are relative to the
+recording and use heuristics; they are not reliable semantic music labels.
+In particular, `harmony` is a chroma-change descriptor, not a chord
+transcription, and `accent` is a locally prominent onset, not proof of a
+musical downbeat. Historical noise and unusual recordings can affect results.
 
-- minimum/maximum brightness: 25% / 100%; gamma: 1.05;
-- rhythmic momentum influence: 100%; above-average energy influence: 75%;
-- movement relaxation: 2500 ms; colour step speed: 220%;
-- exceptional kick threshold: 90%; exceptional kick colour time: 650 ms;
-- structure effects enabled; AV delay 0 ms.
+### How the director converts features to lighting
 
-The corresponding default configuration is:
+Each automatically controlled fixture has its own reproducible random hue
+journey, with its own target and nominal 1–20 second travel duration in music
+mode. The target is replaced upon arrival. Sustained build increases the
+travel rate; detected salience, accent or colour-change events add **temporary
+speed boosts**. Those boosts decay exponentially and add together if events
+arrive close together, up to a configurable maximum.
 
-```json
-"music": {
-  "enabled": false,
-  "minimumBrightnessPercent": 25,
-  "maximumBrightnessPercent": 100,
-  "gamma": 1.05,
-  "rhythmicMomentumInfluencePercent": 100,
-  "aboveAverageEnergyInfluencePercent": 75,
-  "movementRelaxationMs": 2500,
-  "colourStepSpeedPercent": 220,
-  "exceptionalKickThresholdPercent": 90,
-  "exceptionalKickColourTimeMs": 650,
-  "structureEffectsEnabled": true,
-  "avDelayMs": 0
-}
-```
+A substantial rhythm, dynamics, harmony or timbre peak may also trigger a
+**hue nudge**: over roughly 0.6 seconds the displayed colour moves by at least
+the configured hue displacement, arriving at the event timestamp. The original
+wandering target remains; after the nudge the fixture resumes travelling
+towards that target, rather than choosing a replacement destination.
 
-Values explicitly present in `config.json` override these defaults. In the
-supplied venue configuration music response is enabled and exceptional kick
-colour time is 800 ms; the remaining music values currently match the defaults
-above.
+![Independent wandering, a hue nudge and resumption](docs/images/hue-nudge.svg)
 
-FFmpeg must be available on `PATH`. Positive AV delay means later light. Venue
-audio, OS, USB, and fixture latency should be measured before relying on a final
-offset.
+Brightness is a separate, relatively restrained effect. Prominent accents can
+produce a half-second **Gaussian-shaped brightness pulse** during appropriate
+musical passages. The pulse has its own offset (`tangoPulseDelayMs`, default
++200 ms) and does not change the global AV/DSP delay (`avDelayMs`). Activity
+drops no longer produce dedicated pulses. The director also guards against
+false cues from a terminal drop into silence; where an ending is ambiguous,
+this remains a heuristic rather than a perfect music-boundary detector.
+
+![Accumulating speed impulses and a separate rounded brightness pulse](docs/images/impulses-and-pulses.svg)
+
+**Controls in the Music response panel** include music enable/disable, minimum
+and maximum brightness, colour-change sensitivity, event sensitivity, minimum
+hue displacement, event speed multiplier, speed-boost decay, maximum combined
+speed, accent fallback delay, accent pulse delay and AV delay. Changes to
+settings that affect precomputed trajectories rebuild the director data; they
+do not require a fresh audio FFT analysis. The current venue `config.json` is
+the source of initial values and settings can be changed through the web page.
+Some existing configuration fields are retained for older installations; the
+unified director is the active music algorithm.
+
+### Track handoff and event priority
+
+![Music, silence, cortina and next-track handoff](docs/images/track-handoff.svg)
+
+- **Normal track:** music-derived colour and speed interventions are applied to
+  automatic fixtures, while static overrides remain untouched.
+- **End / silence / pause:** no final-drop lighting event or colour reset;
+  ordinary slow wandering resumes from the last visible colour.
+- **Next track:** new director trajectories are phase-offset to start at each
+  fixture's current displayed hue; brightness is blended over the handoff.
+- **Cortina:** Tanda Forge sends the separate lights-up notification, which
+  takes priority over wandering and music cues. Each DMX fixture fades to its
+  saved `lightsUpColour` (which may be different for every light). This brighter,
+  stable state is intended to help dancers see one another for cabeceo. On
+  lights-down the underlying normal lighting behaviour resumes.
+
+### Optional ESP table lights
+
+The ESP bridge controls a separate table-light group. In its **autonomous**
+mode the table lights do their own colour wandering. During a shared/master
+period, the bridge can switch them to **MASTER** colour control, and the
+Lighting application supplies a common hue target and transition duration.
+The table lights do not receive DMX brightness pulses or independent
+per-fixture music journeys. Their master/wander state is controlled by the
+bridge and may switch as a group; see [ESP table-lights bridge](#esp-table-lights-bridge)
+for the actual protocol and authority rules. Cortina lights-up notifications
+are forwarded to the bridge as well.
 
 ### Individual and master modes
 
@@ -401,9 +430,11 @@ delay slider until the flash coincides with the click heard through the DJ audio
 path. The range is 0 to 4 seconds in 1 ms steps and delays the lighting relative
 to the click.
 
-The selected value is saved as `music.avDelayMs` and is therefore also used by
-music-responsive lighting. Stop the click track or leave the calibration page
-to restore normal DMX rendering.
+The selected value is saved as `music.avDelayMs` and affects the overall
+audio-to-lighting alignment. The separate accent pulse delay modifies only
+brightness pulses; it does not retime colour events or compensate for the DSP
+path. Stop the click track or leave the calibration page to restore normal DMX
+rendering.
 
 ## Diagnostics and operational help
 
@@ -578,3 +609,53 @@ The analyser now measures short-time **raw RMS** to detect a sustained final nea
 ### Activity drops and final endings (latest update)
 
 The director no longer turns activity-drop measurements into brightness pulses. End-of-track decays are especially prone to false dramatic events. A terminal collapse in musical energy is used **only as a veto** on new accent and colour nudge cues; it does not itself emit a cue. The detector prefers the analysed near-silent-tail onset when available, and otherwise looks for a sharp energy collapse sustained into the final part of the track. This is not an arbitrary three-second blackout. High-energy development and normal wandering remain active until the drop, and build continues to influence wandering speed. The `activityDrop` trace remains in analysis for diagnostics, but its effect count is zero.
+
+
+### Musical hue displacement and decaying speed boosts
+
+The **Music response** panel now exposes four controls beyond sensitivity:
+
+- **Minimum hue displacement** (30–150°; default 55°) is the minimum angular movement when a significant rhythmic/dynamic/harmonic/texture change nudges an individual light. The nudge is a short transition scheduled to finish at the detected event; the underlying wandering destination is retained.
+- **Event speed boost** (×1–×12; default ×6) controls the immediate speed multiplication for a full-strength detected event. It affects movement towards the fixture's existing random target; it does *not* choose a new target.
+- **Speed boost decay** (100–5000 ms; default 1200 ms) controls how long the extra speed persists. The added speed decays exponentially to about 2% of its initial value at the selected time.
+- **Maximum combined speed** (×2–×40; default ×18) caps the product of the build-driven speed factor and the accumulated event boosts.
+
+**Event minimum spacing is removed.** Locally prominent salience, accent and colour-change events add to a shared speed-boost envelope, including closely spaced events. Multiple boosts can compound, but the speed cap stops runaway movement. Sparse passages can therefore produce temporary speed bursts without forcing colour jumps. The hue-change sensitivity remains independent of the speed-boost event sensitivity.
+
+Changing any of these settings in the web panel rebuilds the deterministic director trajectories using the existing cached track analysis; the audio file need not be decoded again. When no track is playing, regular slow independent wandering remains unchanged. The final terminal energy collapse is still prevented from creating a new music cue.
+
+### Ending and pulse timing
+
+The audio worker checks the last 3.5 seconds for a sustained raw-RMS collapse,
+including noisy archival endings. Terminal edge cues (hue nudges, accents and
+additional speed boosts) are suppressed, but earlier musical events remain.
+When no convincing terminal collapse is found, the director keeps its normal
+behaviour. This is a heuristic, not a guaranteed score-level ending detector.
+
+The **Accent pulse delay** slider defaults to **+200 ms** (range -500 to +500 ms).
+It shifts *only* the smooth Gaussian accent brightness response; AV delay
+continues to control global playback / lighting synchronisation.
+
+### Diagnosing lights that go dark after Lights Up
+
+The Lights Up switch is persistent: when enabled, the fade level should reach `1`
+and every fixture's `finalRgb` should equal its configured `lightsUpColour`
+(subject to the master-brightness setting). It must **not** turn off after a timer.
+
+If fixtures unexpectedly go black, open `http://localhost:8080/api/state`
+while they are dark and inspect:
+
+- `lightsUp`: whether the controller still considers the cortina state active.
+- `lightsUpFadeLevel`: the actual fade state, reaching `1` after the configured fade-up time.
+- `lightsUpLastCommand`: the last **state-changing** request, including `source`
+  (`web /api/lights` or `ESP32 bridge serial`) and wall-clock timestamp.
+- `fixtures[0].finalRgb`, `finalBrightness` and `lightsUpColour`: whether the
+  controller is still calculating nonzero DMX channel values.
+- `dmx.connected` and `dmx.outputs`: what transport is currently active.
+
+If `lightsUp` becomes `false`, inspect the logged `Lights down from ...` line
+and the origin reported by `lightsUpLastCommand`. If `lightsUp` remains `true`,
+`lightsUpFadeLevel` is `1` and fixture RGB values are nonzero, investigate
+physical DMX output, the bridge and the fixture independently; changing music
+thresholds will not solve that output-layer failure. The diagnostics report
+software-calculated channels, not an independent measurement of DMX on the wire.

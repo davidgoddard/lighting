@@ -30,3 +30,29 @@ export function detectFinalSilence(rms, hopSeconds, duration) {
   const at=Math.max(0,(start*hopSeconds));
   return at <= duration-.35 ? +at.toFixed(3) : null;
 }
+
+
+// Find a sharp *final* reduction in recorded RMS, even when surface hiss or
+// mastering noise makes the ending too loud for a strict silence detector.
+// Only a drop with a quiet suffix is eligible; isolated earlier pauses aren't.
+export function detectTerminalCollapse(rms, hopSeconds, duration) {
+  if (!rms?.length || !Number.isFinite(hopSeconds) || hopSeconds <= 0) return null;
+  const n=rms.length;
+  const window=Math.max(2,Math.round(.22/hopSeconds));
+  const average=(a,b)=>{let sum=0,k=0;for(let i=Math.max(0,a);i<Math.min(n,b);i++){sum+=rms[i];k++;}return k?sum/k:0;};
+  const latest=n-1-Math.ceil(.22/hopSeconds);
+  const first=Math.max(window*2, Math.floor((duration-3.5)/hopSeconds));
+  let candidate=null,score=0;
+  for(let i=first;i<=latest;i++){
+    const before=average(i-window*2,i-window);
+    const after=average(i+window,i+window*2);
+    if(before<.00005 || after>before*.42)continue;
+    // Confirm the music does not return after the drop, allowing a quiet
+    // recording tail rather than insisting on digital zero.
+    const tail=average(i+window,n);
+    if(tail>before*.47)continue;
+    const ratio=before/(after+.00001);
+    if(ratio>score){score=ratio;candidate=i*hopSeconds;}
+  }
+  return candidate===null?null:+candidate.toFixed(3);
+}
