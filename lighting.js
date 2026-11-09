@@ -984,6 +984,17 @@ function fixtureOutput(config, states, state, now, controls) {
     return { hue: ((hue % 360) + 360) % 360, values, musicValue, controllingState };
 }
 
+function tableMasterTransition(config, states, mode, controls, now) {
+  if (!controls.tangoLook) return mode.masterTransition;
+  const representative = states.find(state => !isPairFollower(state) && state.staticHue === null);
+  if (!representative) return mode.masterTransition;
+  // The Tango director renders the visible master colour independently of the
+  // ordinary wander transition. Feed that actual colour to the bridge often
+  // enough for its normal interpolation to keep the table lights in step.
+  const hue = fixtureOutput(config, states, representative, now, controls).hue;
+  return { fromHue: hue, toHue: hue, startedAt: now, durationMs: 250 };
+}
+
 function renderUniverse(config, states, now, controls) {
   // Buffer.alloc fills every channel with zero before mapped values are applied.
   const universe = Buffer.alloc(config.universeLength, 0);
@@ -1312,6 +1323,15 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
       if (request.method === "POST" && url.pathname === "/api/lights") {
         const body = await readJson(request);
         if (typeof body.up !== "boolean") fail("up must be true or false");
+        if (body.immediate !== undefined && typeof body.immediate !== "boolean") {
+          fail("immediate must be true or false");
+        }
+        // Cortina commands arrive on the undelayed control timeline. Hold both
+        // DMX and ESP table-light output by the same amount used for music so
+        // the visible cue does not precede delayed audio playback. Direct
+        // dashboard operation is an explicit live override and bypasses this.
+        const delayMs = body.immediate ? 0 : Math.max(0, Number(config.music?.avDelayMs) || 0);
+        if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
         setLightsUp(config, mode, body.up, performance.now(), "web /api/lights");
         const forwarded = await externalMaster.sendLightsUp(body.up).catch(error => {
           console.warn(`Could not forward lights state to ESP: ${error.message}`);
@@ -1731,7 +1751,8 @@ async function main() {
       const tableShouldFollowMaster = mode.name === "master";
       const musicMasterPaused = false;
       if (tableShouldFollowMaster && !musicMasterPaused) {
-        await externalMaster.syncMusicMaster?.(mode.masterTransition, null, now)
+        const tableTransition = tableMasterTransition(config, states, mode, controls, now);
+        await externalMaster.syncMusicMaster?.(tableTransition, null, now)
           .catch(error => console.warn(`Could not update table master: ${error.message}`));
         tableMusicMasterActive = true;
       } else if (musicMasterPaused) {

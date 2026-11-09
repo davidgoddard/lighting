@@ -24,9 +24,10 @@ function harness() {
     process: { argv: [], cwd: () => '/tmp' }, URL, Buffer, performance, console,
     setTimeout, clearTimeout, setInterval, clearInterval, SerialPort,
     ReadlineParser: class {}, validateMusicConfig, encodeBridgeDmx,
+    offsetHue: (hue, offset) => (hue + offset + 360) % 360,
     createServer: callback => { handler = callback; return { once() {} }; }
   });
-  vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode, setIndividualMode};', context);
+  vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode, setIndividualMode, tableMasterTransition};', context);
   return { api: context.api, port: () => port, request: async (path, body) => {
     const request = Object.assign(Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []), { method: body ? 'POST' : 'GET', url: path });
     let status, result;
@@ -172,6 +173,26 @@ test('table music master rate-limits destinations, handles kicks and returns to 
   assert.match(h.port().writes.at(-1), /^MASTER 170 4900\n$/);
   await monitor.close();
   assert.equal(await monitor.syncMusicMaster(transition, ordinary, 2000), false, 'disconnect is harmless');
+});
+
+test('table master follows the colour actually rendered by the Tango director', () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  const states = config.fixtures.slice(0, 2).map(fixture => h.api.createFixtureState(config, fixture, 0));
+  const mode = h.api.createModeState(config, 0);
+  mode.name = 'master';
+  mode.masterTransition = {fromHue:10,toHue:20,startedAt:0,durationMs:10000};
+  const controls = {
+    mode,
+    masterBrightness: config.masterBrightness,
+    tangoHueOffsets: {master: 0},
+    tangoLook: {look:{hue:210,fixtureHues:{},brightness:.5,saturation:1}}
+  };
+  const transition = h.api.tableMasterTransition(config, states, mode, controls, 5000);
+  assert.equal(transition.toHue, 210, 'bridge target must use the visible DMX master hue');
+  assert.equal(transition.durationMs, 250);
+  assert.notEqual(transition.toHue, mode.masterTransition.toHue,
+    'the dormant wander target must not be sent while the director renders DMX');
 });
 
 test('music master mode gives every automatic DMX fixture one shared trajectory', () => {
@@ -473,4 +494,44 @@ test('lights-up state retains full fade level and cortina RGB after the fade fin
   assert.equal(result.result.fixtures[0].finalRgb.red, fixture.lightsUpColour.red);
   assert.equal(result.result.fixtures[0].finalRgb.green, fixture.lightsUpColour.green);
   assert.equal(result.result.fixtures[0].finalRgb.blue, fixture.lightsUpColour.blue);
+});
+
+test('cortina output to DMX and the table bridge waits for the configured AV delay', async () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  config.music.avDelayMs = 30;
+  const mode = h.api.createModeState(config, performance.now());
+  const monitor = h.api.createExternalMasterMonitor(config, [], mode);
+  await new Promise(resolve => setImmediate(resolve));
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0}');
+  h.api.createWebServer(config, [], mode, {}, monitor);
+  const before = performance.now();
+  const pending = h.request('/api/lights', {up:true});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(mode.lightsUp, false, 'DMX must not begin its fade before the delay');
+  assert.notEqual(h.port().writes.at(-1), '1\n', 'bridge command must not precede the audio cue');
+  const result = await pending;
+  assert.ok(performance.now() - before >= 25);
+  assert.equal(result.result.up, true);
+  assert.equal(mode.lightsUp, true);
+  assert.equal(h.port().writes.at(-1), '1\n');
+  await monitor.close();
+});
+
+test('the web-page cortina switch bypasses AV delay as a live override', async () => {
+  const h = harness();
+  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
+  config.music.avDelayMs = 5000;
+  const mode = h.api.createModeState(config, performance.now());
+  const monitor = h.api.createExternalMasterMonitor(config, [], mode);
+  await new Promise(resolve => setImmediate(resolve));
+  h.port().parser.emit('data', 'TABLE: {"static":false,"hue":0}');
+  h.api.createWebServer(config, [], mode, {}, monitor);
+  const before = performance.now();
+  const result = await h.request('/api/lights', {up:true, immediate:true});
+  assert.ok(performance.now() - before < 100, 'operator override should not wait for AV delay');
+  assert.equal(result.result.up, true);
+  assert.equal(mode.lightsUp, true);
+  assert.equal(h.port().writes.at(-1), '1\n');
+  await monitor.close();
 });

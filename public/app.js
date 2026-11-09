@@ -463,7 +463,7 @@ lightsUpButton.addEventListener("click", async () => {
   const requested = !lightsUp;
   lightsUpButton.disabled = true;
   try {
-    const result = await post("/api/lights", { up: requested });
+    const result = await post("/api/lights", { up: requested, immediate: true });
     displayLightsUp(result.up);
     status.textContent = result.up ? "Lights raised" : "Normal colours resumed";
   } catch (error) {
