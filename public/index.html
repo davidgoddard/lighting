@@ -86,9 +86,16 @@
     <section class="panel music-panel" aria-labelledby="music-heading">
       <div class="section-heading">
         <div><h2 id="music-heading">Music response</h2><p id="music-status" class="muted">No track</p></div>
+        <label>Colour wheel layout <select id="music-loudness-colour-mode"><option value="shared">Shared colour</option><option value="offsets">Multi-light: colour offsets</option><option value="bands">Multi-light: bass / mid / treble</option></select></label>
+        <label class="music-toggle"><input id="music-loudness-colour" type="checkbox"> Loudness colour wheel (overrides transition modes)</label>
+        <label class="music-toggle"><input id="music-simple-loudness" type="checkbox"> Simple loudness transitions</label>
         <label class="music-toggle"><input id="music-enabled" type="checkbox"> Enabled</label>
       </div>
+      <p class="muted">Simple mode: normal time at median loudness, fastest at the track maximum, slowest at its minimum. Lower times mean faster changes. Keep fastest ≤ normal ≤ slowest. Advanced effect controls apply only when simple mode is off.</p>
       <div class="music-controls">
+        <label>Simple: normal transition <input id="music-simple-normal" type="range" min="1" max="60" step="1"><output></output></label>
+        <label>Simple: fastest transition <input id="music-simple-fastest" type="range" min="1" max="60" step="1"><output></output></label>
+        <label>Simple: slowest transition <input id="music-simple-slowest" type="range" min="1" max="60" step="1"><output></output></label>
         <label>Minimum brightness <input id="music-min" type="range" min="0" max="100"><output></output></label>
         <label>Maximum brightness <input id="music-max" type="range" min="50" max="100"><output></output></label>
         <label>Colour-change sensitivity <input id="music-change-sensitivity" type="range" min="0.2" max="0.95" step="0.01"><output></output></label>

@@ -1,5 +1,5 @@
 import { encodeBridgeDmx } from "./bridge-dmx.js";
-import { createDmxOutputs } from "./dmx-outputs.js";
+import { createDmxOutputs, findOpenDmxPort } from "./dmx-outputs.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import process from "node:process";
@@ -9,8 +9,10 @@ import usb from "usb";
 import { createAudioAnalyser } from "./audio-analysis.js";
 import { PlaybackCoordinator } from "./playback-integration.js";
 // TANGO_DIRECTOR_PATCH_V1
+import { createLoudnessColourDirector } from "./loudness-colour.mjs";
+import { createSimpleDirector } from "./simple-director.mjs";
 import { createTangoDirector } from "./tango-director.mjs";
-import { hueOffsets, offsetHue } from "./music-handoff.mjs";
+import { hueOffsets, offsetHue, blendHue } from "./music-handoff.mjs";
 import { validateMusicConfig } from "./music-intent.js";
 
 const argumentsList = process.argv.slice(2);
@@ -130,6 +132,10 @@ function validateConfig(config) {
   if (config.openDmx.serialNumber !== undefined && typeof config.openDmx.serialNumber !== "string") {
     fail("openDmx.serialNumber must be a string");
   }
+  if (config.openDmx.serialNumbers !== undefined && (!Array.isArray(config.openDmx.serialNumbers) ||
+      config.openDmx.serialNumbers.length === 0 || config.openDmx.serialNumbers.some(value => typeof value !== "string" || !value.trim()))) {
+    fail("openDmx.serialNumbers must be a non-empty array of serial-number strings");
+  }
   config.music = validateMusicConfig(config.music);
 
   const occupied = new Map();
@@ -200,6 +206,7 @@ function validateConfig(config) {
     openDmx: {
       enabled: config.openDmx?.enabled ?? false,
       path: config.openDmx?.path,
+      serialNumbers: config.openDmx?.serialNumbers,
       serialNumber: config.openDmx?.serialNumber
     }
   };
@@ -930,12 +937,15 @@ function fixtureOutput(config, states, state, now, controls) {
       // Master mode shares one trajectory; individual mode uses independent
       // fixture-id-keyed trajectories without assuming anything about venue position.
       const look = controls.tangoLook.look;
-      const individual = controls.mode?.name === "individual";
+      const individual = look.independentFixtures || controls.mode?.name === "individual";
       const directedHue = individual
         ? look.fixtureHues?.[controllingState.fixture.id] ?? look.hue : look.hue;
-      hue = offsetHue(directedHue, individual
+      hue = offsetHue(directedHue, look.absoluteHue ? 0 : individual
         ? controls.tangoHueOffsets?.[controllingState.fixture.id] ?? 0
         : controls.tangoHueOffsets?.master ?? 0);
+      const handoff = controls.musicHueHandoff;
+      const from = handoff?.hues[controllingState.fixture.id];
+      if (Number.isFinite(from)) hue = blendHue(from, hue, (now - handoff.startedAt) / 1500);
       const channels = state.fixture.type?.channels ?? {};
       const hasDimmer = "brightness" in channels;
       const minimum = config.music.minimumBrightnessPercent / 100;
@@ -1079,13 +1089,7 @@ async function createUdmxTransport(config) {
 async function createOpenDmxTransport(config) {
   if (!config.openDmx.enabled) return null;
   const ports = await SerialPort.list();
-  const match = ports.find(candidate =>
-    config.openDmx.path
-      ? candidate.path === config.openDmx.path
-      : config.openDmx.serialNumber
-        ? candidate.serialNumber === config.openDmx.serialNumber
-        : candidate.manufacturer?.toLowerCase().includes("ftdi")
-  );
+  const match = findOpenDmxPort(ports, config.openDmx);
   if (!match) return null;
   const port = new SerialPort({
     path: match.path,
@@ -1261,6 +1265,10 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
               structure: displayedIntent.structure
             } : null,
             director: controls.tangoLook ? {
+              absoluteHue: controls.tangoLook.look.absoluteHue,
+              hue: controls.tangoLook.look.hue,
+              normalisedMedianLoudness: controls.tangoLook.look.normalisedMedianLoudness,
+              transitionSeconds: controls.tangoLook.look.transitionSeconds,
               brightness: controls.tangoLook.look.brightness,
               colourAcceleration: controls.tangoLook.look.colourAcceleration,
               speedBoost: controls.tangoLook.look.speedBoost,
@@ -1351,10 +1359,10 @@ function createWebServer(config, states, mode, controls, externalMaster, transpo
         const body = await readJson(request);
         // Director controls change the lighting interpretation, not the audio
         // analysis. Rebuild the deterministic lane frames without re-decoding.
-        const directorKeys = ["tangoColourChangeSensitivity", "tangoAccentFallbackDelaySeconds",
+        const directorKeys = ["simpleNormalSeconds", "simpleFastestSeconds", "simpleSlowestSeconds", "tangoColourChangeSensitivity", "tangoAccentFallbackDelaySeconds",
           "tangoEventSensitivity", "tangoMinimumHueDisplacementDegrees", "tangoSpeedBoostMultiplier",
           "tangoSpeedBoostDecayMs", "tangoMaximumSpeedMultiplier"];
-        const directorChanged = directorKeys.some(name => body[name] !== undefined && Number(body[name]) !== config.music[name]);
+        const directorChanged = (body.loudnessColourMode !== undefined && body.loudnessColourMode !== config.music.loudnessColourMode) || (body.loudnessColour !== undefined && body.loudnessColour !== config.music.loudnessColour) || (body.simpleLoudness !== undefined && body.simpleLoudness !== config.music.simpleLoudness) || directorKeys.some(name => body[name] !== undefined && Number(body[name]) !== config.music[name]);
         config.music = validateMusicConfig({ ...config.music, ...body });
         await persistMusicConfig(config.music);
         if (directorChanged) controls.directorRevision = (controls.directorRevision ?? 0) + 1;
@@ -1639,7 +1647,7 @@ async function main() {
   let directorWasActive = false;
   let brightnessHandoff = null;
   let lastMusicBrightness = null;
-  console.log("Tango director ENABLED (the only music lighting engine)");
+  console.log("Music lighting enabled; engine selected in web controls");
   webServer = createWebServer(config, states, mode, controls, externalMaster, transport, playback);
   webServer.listen(config.webPort, "0.0.0.0", () => {
     console.log(`Lighting controls: http://localhost:${config.webPort}`);
@@ -1667,8 +1675,9 @@ async function main() {
           const masterVisible = states.find(state => !isPairFollower(state) && state.staticHue === null);
           if (masterVisible) visible.master = fixtureOutput(config, states, masterVisible, now, controls).hue;
           tangoProfile = playback.snapshot.profile;
-          tangoDirector = createTangoDirector(tangoProfile, config.music, states.map(state => state.fixture.id));
+          tangoDirector = (config.music.loudnessColour ? createLoudnessColourDirector : config.music.simpleLoudness ? createSimpleDirector : createTangoDirector)(tangoProfile, config.music, states.map(state => state.fixture.id));
           const incoming = tangoDirector(musicPosition, config.music).look;
+          if (incoming.absoluteHue) controls.musicHueHandoff = { hues: visible, startedAt: now };
           controls.tangoHueOffsets = hueOffsets(visible, {
             ...incoming.fixtureHues, master: incoming.hue
           });
@@ -1748,6 +1757,13 @@ async function main() {
         loggedMusicSession = playback.snapshot.sessionId;
         loggedMusicSecond = musicSecond;
       }
+      if (controls.tangoLook && controls.lastMusicMode !== undefined && controls.lastMusicMode !== mode.name)
+        controls.musicHueHandoff = { hues: controls.lastRenderedHues ?? {}, startedAt: now };
+      controls.lastMusicMode = mode.name;
+      if (controls.musicHueHandoff && now - controls.musicHueHandoff.startedAt >= 1500)
+        controls.musicHueHandoff = null;
+      controls.lastRenderedHues = Object.fromEntries(states.map(state =>
+        [state.fixture.id, fixtureOutput(config, states, state, now, controls).hue]));
       const tableShouldFollowMaster = mode.name === "master";
       const musicMasterPaused = false;
       if (tableShouldFollowMaster && !musicMasterPaused) {

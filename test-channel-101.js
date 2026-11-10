@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { SerialPort } from "serialport";
 import usb from "usb";
-import { createDmxOutputs } from "./dmx-outputs.js";
+import { createDmxOutputs, findOpenDmxPort } from "./dmx-outputs.js";
 
 const FPS = 20;
 const FRAME_MS = 1000 / FPS;
@@ -59,13 +59,7 @@ async function sendOpenDmxUniverse(port, universe) {
 async function createOpenDmxTransport(config) {
   if (!config.openDmx?.enabled) return null;
   const ports = await SerialPort.list();
-  const match = ports.find(candidate =>
-    config.openDmx.path
-      ? candidate.path === config.openDmx.path
-      : config.openDmx.serialNumber
-        ? candidate.serialNumber === config.openDmx.serialNumber
-        : candidate.manufacturer?.toLowerCase().includes("ftdi")
-  );
+  const match = findOpenDmxPort(ports, config.openDmx);
   if (!match) return null;
 
   const port = new SerialPort({

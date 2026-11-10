@@ -324,11 +324,17 @@ Enable the Open DMX output and identify it by serial number (preferred):
 ```json
 "openDmx": {
   "enabled": true,
-  "serialNumber": "BG00QGXZ"
+  "serialNumbers": ["BG00QGXZ", "B002K1F3"]
 }
 ```
 
-Alternatively specify its operating-system device `path`. A serial number is
+Either listed adapter can be used, including after unplugging and reconnecting.
+If both are attached, the first matching enumerated port is selected; this is one
+Open DMX output. The legacy `serialNumber` setting remains supported and can
+also be combined with `serialNumbers`. An explicit serial selector never falls
+back to an unrelated FTDI device.
+
+Alternatively specify its operating-system device `path` (which takes priority). A serial number is
 more stable because device paths can change after reconnection or reboot.
 
 On macOS, USB identities and serial numbers can be inspected with:
@@ -659,3 +665,90 @@ and the origin reported by `lightsUpLastCommand`. If `lightsUp` remains `true`,
 physical DMX output, the bridge and the fixture independently; changing music
 thresholds will not solve that output-layer failure. The diagnostics report
 software-calculated channels, not an independent measurement of DMX on the wire.
+
+### Simple loudness experiment
+
+The music panel now defaults to **Simple loudness transitions**. Turn this off
+for the existing Tango director and its advanced effect controls. Music must
+still be enabled and a track ready. Static colours, pairing, cortina overrides
+and autonomous wandering without playback retain their existing behaviour.
+
+In simple mode every automatic light repeatedly chooses a saturated colour-wheel
+target, travels to it at the audio-driven speed, then chooses again.
+The smoothed RMS loudness trace is normalised to the track's own minimum (0)
+and maximum (1), then its median is calculated. Recording gain therefore does
+not set the pace. Loudness below the median interpolates
+from the normal time to the slowest time; above it interpolates towards the
+fastest time at the track maximum. Interpolation is linear in speed (the reciprocal of transition time), so
+halfway from median to maximum means halfway to the maximum speed.
+
+The music panel provides **normal**, **fastest** and **slowest transition**
+controls (defaults 12, 3 and 24 seconds; each adjustable from 1–60 seconds).
+Keep fastest ≤ normal ≤ slowest. There is no random timing variation, so these
+are actual bounds. Constant-level tracks and silence use the normal time.
+The whole track, including silence, contributes to the median and range.
+Speed responds throughout travel, including brief loud passages during a slow
+transition. Each chosen colour destination remains fixed until arrival. The
+panel shows normalised loudness, the track median and effective transition time
+(the time a whole transition would take at the current speed).
+
+Brightness stays at the configured maximum music brightness (subject to master
+brightness and existing overrides); no accents or brightness pulses are emitted.
+The existing advanced effect sliders apply only to the Tango director. Timing changes rebuild the trajectories using the existing analysis and preserve
+the visible colour at handoff.
+
+### Loudness colour wheel experiment
+
+Enable **Loudness colour wheel** in Music response to override both transition
+engines. The track's smoothed RMS minimum, median and maximum all map to red. Each
+half-range makes one complete reverse turn of the saturated colour wheel. Above
+the median, rising loudness moves through purple, blue, cyan, green, yellow and
+orange before reaching red at the maximum. Just below the median is yellow/orange;
+falling farther moves through green, cyan, blue and purple back to minimum red.
+Each half uses its own measured range, even when the median is not halfway
+between minimum and maximum. Falling loudness retraces the wheel. Loudness is
+interpolated between analysis samples before conversion to hue; there are no
+random targets, speed sliders or fixed-duration colour transitions in this mode.
+All automatic fixtures share the same colour. Static colours and lights-up
+retain their overrides; brightness stays at maximum music brightness.
+Silence/constant-level tracks are red. Existing 1.2-second RMS smoothing and AV
+delay still apply. The panel reports normalised loudness and hue.
+
+On entering this mode, a 1.5-second blend preserves the displayed colour before
+settling onto the absolute mapping (no permanent hue offset). Music-driven
+individual/master switches now also blend over 1.5 seconds rather than jumping
+between unrelated trajectories. Fast changes caused by rapidly changing audio
+remain possible; this is not a general colour-speed limiter.
+
+### Multi-light colour-wheel layouts
+
+With **Loudness colour wheel** enabled, choose **Colour wheel layout**:
+
+- **Shared colour** preserves the original red-anchored mapping.
+- **Multi-light: colour offsets** uses the same full-track loudness for every
+  fixture, but spaces their anchor hues evenly around 360° in configured fixture
+  order. Three fixtures have anchors 0°, 120°, 240°. Each still makes one reverse
+  revolution from minimum to median and another from median to maximum.
+- **Multi-light: bass / mid / treble** assigns those bands cyclically in configured
+  fixture order. Bands are 20–250 Hz, 250–2000 Hz, and 2000 Hz to the analyser's
+  5512.5 Hz Nyquist limit. FFT power magnitudes are smoothed over 1.2 seconds;
+  each band's own minimum, median and maximum set its two red-anchored turns.
+
+Multi-light layouts retain separate fixture colours during master mode. Static
+colours and lights-up still override music; paired fixtures still follow their
+leader. Assignments include all configured fixture slots, so changing a fixture
+between static and automatic does not rearrange the others. The current table
+bridge still controls its table lights as one group, not individually.
+
+Restart Lighting and reload the track to obtain frequency-band analysis. Older
+profiles explicitly report a full-loudness fallback until reanalysed. Layout
+changes use the existing colour handoff blend and do not require reanalysis once
+band traces are available.
+
+If all lamp emulations show the same colour, check the layout shown in the
+Music response status. Enabling the colour wheel alone does not select bands:
+**Shared colour** deliberately drives all automatic lights alike. Select
+**Multi-light: bass / mid / treble** for separate band curves. If the status
+reports unavailable bands, restart Lighting and reload the track for analysis.
+The emulations display each fixture's rendered RGB output, including pairing
+and lights-up overrides; bands may occasionally converge on the same colour.

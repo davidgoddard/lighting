@@ -1,7 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createDmxOutputs } from '../dmx-outputs.js';
+import { createDmxOutputs, findOpenDmxPort } from '../dmx-outputs.js';
 const log = { log() {}, warn() {} };
+
+test('Open DMX accepts either configured adapter without selecting unrelated FTDI ports', () => {
+  const old = {path:'/old', serialNumber:'BG00QGXZ', manufacturer:'FTDI'};
+  const current = {path:'/current', serialNumber:'B002K1F3', manufacturer:'FTDI'};
+  const other = {path:'/other', serialNumber:'OTHER', manufacturer:'FTDI'};
+  const config = {serialNumbers:[old.serialNumber, current.serialNumber]};
+  assert.equal(findOpenDmxPort([other, old], config), old);
+  assert.equal(findOpenDmxPort([other, current], config), current);
+  assert.equal(findOpenDmxPort([other], config), undefined);
+  assert.equal(findOpenDmxPort([current, old], config), current);
+  assert.equal(findOpenDmxPort([current, old], {serialNumber:old.serialNumber}), old);
+  assert.equal(findOpenDmxPort([old], {serialNumbers:[current.serialNumber], serialNumber:old.serialNumber}), old);
+  assert.equal(findOpenDmxPort([other, old], {...config, path:other.path}), other);
+  assert.equal(findOpenDmxPort([other], {}), other);
+  for (const serialNumbers of [[], 'invalid', [null], [' ']]) {
+    assert.throws(() => findOpenDmxPort([], {serialNumbers}), /serialNumbers/);
+  }
+});
 
 test('last output disconnects without rejecting frames; reconnect sends current frame', async () => {
   let now = 0, opens = 0, closes = 0, connected = true, detached = false;

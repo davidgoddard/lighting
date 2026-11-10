@@ -18,6 +18,12 @@ const lightsUpLabel = document.querySelector("#lights-up-label");
 const cortinaColourInput = document.querySelector("#cortina-colour");
 const applyCortinaColourButton = document.querySelector("#apply-cortina-colour");
 const musicInputs = {
+  loudnessColourMode: document.querySelector("#music-loudness-colour-mode"),
+  loudnessColour: document.querySelector("#music-loudness-colour"),
+  simpleNormalSeconds: document.querySelector("#music-simple-normal"),
+  simpleFastestSeconds: document.querySelector("#music-simple-fastest"),
+  simpleSlowestSeconds: document.querySelector("#music-simple-slowest"),
+  simpleLoudness: document.querySelector("#music-simple-loudness"),
   enabled: document.querySelector("#music-enabled"), minimumBrightnessPercent: document.querySelector("#music-min"),
   maximumBrightnessPercent: document.querySelector("#music-max"),
   tangoColourChangeSensitivity: document.querySelector("#music-change-sensitivity"),
@@ -30,7 +36,7 @@ const musicInputs = {
   tangoPulseDelayMs: document.querySelector("#music-pulse-delay"),
   avDelayMs: document.querySelector("#music-delay")
 };
-const musicDefaults = { enabled: false, minimumBrightnessPercent: 62, maximumBrightnessPercent: 100,
+const musicDefaults = { enabled: false, simpleLoudness: true, loudnessColour: false, loudnessColourMode: "shared", simpleNormalSeconds: 12, simpleFastestSeconds: 3, simpleSlowestSeconds: 24, minimumBrightnessPercent: 62, maximumBrightnessPercent: 100,
   tangoColourChangeSensitivity: .45, tangoAccentFallbackDelaySeconds: 1,
   tangoEventSensitivity: .49, tangoMinimumHueDisplacementDegrees: 55,
   tangoSpeedBoostMultiplier: 6, tangoSpeedBoostDecayMs: 1200,
@@ -60,7 +66,9 @@ function renderMusic(music) {
   const statusLabel = music.kind === "cortina"
     ? "Cortina override — music response suspended"
     : labels[music.status] ?? music.status;
-  document.querySelector("#music-status").textContent = `${music.title ?? ""}${music.title ? " · " : ""}${statusLabel}${music.error ? ` · ${music.error}` : ""}`;
+  const layoutNames = { shared: "Shared colour — all lights use full-track loudness", offsets: "Colour offsets — different anchor per light", bands: "Frequency bands — low / mid / high repeat in fixture order" };
+  const layout = music.config.loudnessColour ? ` · ${layoutNames[music.config.loudnessColourMode ?? "shared"]}` : "";
+  document.querySelector("#music-status").textContent = `${music.title ?? ""}${music.title ? " · " : ""}${statusLabel}${layout}${music.error ? ` · ${music.error}` : ""}`;
   for (const [name, input] of Object.entries(musicInputs)) {
     const value = music.config[name]; if (input.type === "checkbox") input.checked = Boolean(value); else input.value = String(value);
     const output = input.parentElement?.querySelector("output");
@@ -68,7 +76,11 @@ function renderMusic(music) {
   }
   const feature = music.director?.feature ?? music.intent?.feature;
   document.querySelector("#music-features").textContent = feature
-    ? music.director
+    ? music.director?.absoluteHue
+      ? `Loudness ${Math.round(feature.energy * 100)}% · colour ${music.director.hue.toFixed(1)}°`
+      : Number.isFinite(music.director?.normalisedMedianLoudness)
+      ? `Loudness ${Math.round(feature.energy * 100)}% · track median ${Math.round(music.director.normalisedMedianLoudness * 100)}%`
+      : music.director
       ? `Change: rhythm ${Math.round(feature.rhythm*100)}% · dynamics ${Math.round(feature.dynamics*100)}% · harmony ${Math.round(feature.harmony*100)}% · texture ${Math.round(feature.timbre*100)}% · accent ${Math.round(feature.accent*100)}%`
       : `Energy ${Math.round(feature.fastEnergy * 100)}% · phrase ${Math.round(feature.phrase * 100)}% · development ${Math.round(feature.development * 100)}% · momentum ${Math.round(feature.rhythm.momentum * 100)}%`
     : "Waiting for analysis";
@@ -76,7 +88,11 @@ function renderMusic(music) {
     ? ` · ${Math.floor(music.positionSeconds / 60)}:${String(Math.floor(music.positionSeconds % 60)).padStart(2, "0")} / ${Math.floor(music.durationSeconds / 60)}:${String(Math.floor(music.durationSeconds % 60)).padStart(2, "0")}` : "";
   const analysis = Number.isFinite(music.analysisMs) ? ` · analysed in ${(music.analysisMs / 1000).toFixed(1)}s` : "";
   document.querySelector("#music-output").textContent = music.director
-    ? `Brightness ${Math.round(music.director.brightness * 100)}% · colour ×${music.director.colourAcceleration.toFixed(1)}` +
+    ? music.director.absoluteHue
+      ? `${music.director.cue} · two turns per range${timing}${analysis}`
+      : Number.isFinite(music.director.transitionSeconds)
+      ? `Simple mode · effective transition ${music.director.transitionSeconds.toFixed(1)} s · speed ×${music.director.colourAcceleration.toFixed(1)}${timing}${analysis}`
+      : `Brightness ${Math.round(music.director.brightness * 100)}% · colour ×${music.director.colourAcceleration.toFixed(1)}` +
       ` · ${music.director.cue ?? "Wandering"} · ${music.director.colourCueCount ?? 0} colour changes` +
       ` · boost ×${(music.director.speedBoost ?? 1).toFixed(1)}${timing}${analysis}`
     : music.intent
@@ -93,7 +109,7 @@ function scheduleMusicSave() {
   }
   clearTimeout(musicSaveTimer);
   musicSaveTimer = setTimeout(async () => {
-    const body = Object.fromEntries(Object.entries(musicInputs).map(([name, input]) => [name, input.type === "checkbox" ? input.checked : Number(input.value)]));
+    const body = Object.fromEntries(Object.entries(musicInputs).map(([name, input]) => [name, input.type === "checkbox" ? input.checked : input.tagName === "SELECT" ? input.value : Number(input.value)]));
     if (body.minimumBrightnessPercent > body.maximumBrightnessPercent) body.maximumBrightnessPercent = body.minimumBrightnessPercent;
     try { const result = await post("/api/music", body); renderMusic({ config: result.music, status: result.status ?? "NO_TRACK" }); }
     catch (error) { document.querySelector("#music-status").textContent = error.message; }

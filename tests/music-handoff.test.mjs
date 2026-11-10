@@ -15,3 +15,11 @@ test('a fixture hue offset remains constant over subsequent musical movement', (
   assert.equal(offsetHue(20,shift),350);
   assert.equal(offsetHue(50,shift),20);
 });
+
+test('mode handoff starts at displayed colour and smoothly reaches new trajectory across red', async () => {
+  const { blendHue } = await import('../music-handoff.mjs');
+  assert.equal(blendHue(350, 10, 0), 350);
+  assert.equal(blendHue(350, 10, .5), 0);
+  assert.equal(blendHue(350, 10, 1), 10);
+  assert.equal(blendHue(350, 10, 2), 10);
+});

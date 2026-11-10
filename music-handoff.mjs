@@ -17,3 +17,9 @@ export function hueOffsets(currentHues, incomingHues) {
 export function offsetHue(hue, offset = 0) {
   return wrapHue(hue + offset);
 }
+
+export function blendHue(from, to, fraction) {
+  const t = Math.max(0, Math.min(1, fraction));
+  const eased = t * t * (3 - 2 * t);
+  return wrapHue(from + (((to - from + 540) % 360) - 180) * eased);
+}

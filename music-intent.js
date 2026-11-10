@@ -6,6 +6,12 @@ const approach = (current, target, dt, attack, release) => {
 
 export const DEFAULT_MUSIC_CONFIG = Object.freeze({
   enabled: false,
+  simpleLoudness: true,
+  loudnessColour: false,
+  loudnessColourMode: "shared",
+  simpleNormalSeconds: 12,
+  simpleFastestSeconds: 3,
+  simpleSlowestSeconds: 24,
   minimumBrightnessPercent: 25,
   maximumBrightnessPercent: 100,
   gamma: 1.05,
@@ -29,7 +35,9 @@ export const DEFAULT_MUSIC_CONFIG = Object.freeze({
 
 export function validateMusicConfig(source = {}) {
   const config = { ...DEFAULT_MUSIC_CONFIG, ...source };
+  if (!["shared", "offsets", "bands"].includes(config.loudnessColourMode)) throw new Error("Unknown loudness colour mode");
   const ranges = {
+    simpleNormalSeconds: [1, 60], simpleFastestSeconds: [1, 60], simpleSlowestSeconds: [1, 60],
     minimumBrightnessPercent: [0, 100], maximumBrightnessPercent: [50, 100], gamma: [.4, 2],
     rhythmicMomentumInfluencePercent: [0, 200], aboveAverageEnergyInfluencePercent: [0, 100],
     movementRelaxationMs: [400, 5000], colourStepSpeedPercent: [25, 400],
@@ -39,7 +47,7 @@ export function validateMusicConfig(source = {}) {
     tangoSpeedBoostMultiplier: [1, 12], tangoSpeedBoostDecayMs: [100, 5000],
     tangoMaximumSpeedMultiplier: [2, 40], tangoPulseDelayMs: [-500, 500], avDelayMs: [0, 4000]
   };
-  if (typeof config.enabled !== "boolean" || typeof config.structureEffectsEnabled !== "boolean") {
+  if (typeof config.loudnessColour !== "boolean" || typeof config.simpleLoudness !== "boolean" || typeof config.enabled !== "boolean" || typeof config.structureEffectsEnabled !== "boolean") {
     throw new Error("music toggles must be true or false");
   }
   for (const [name, [min, max]] of Object.entries(ranges)) {
@@ -47,6 +55,8 @@ export function validateMusicConfig(source = {}) {
     if (!Number.isFinite(config[name]) || config[name] < min || config[name] > max) throw new Error(`music.${name} must be from ${min} to ${max}`);
   }
   if (config.maximumBrightnessPercent < config.minimumBrightnessPercent) throw new Error("music.maximumBrightnessPercent cannot be less than minimumBrightnessPercent");
+  if (config.simpleFastestSeconds > config.simpleNormalSeconds || config.simpleNormalSeconds > config.simpleSlowestSeconds)
+    throw new Error("Simple transition times must satisfy fastest <= normal <= slowest");
   return config;
 }
 

@@ -1,3 +1,16 @@
+// An explicit path wins; serial selectors never fall back to unrelated FTDI devices.
+export function findOpenDmxPort(ports, config) {
+  if (config.serialNumbers !== undefined && (!Array.isArray(config.serialNumbers) ||
+      config.serialNumbers.length === 0 || config.serialNumbers.some(value => typeof value !== 'string' || !value.trim()))) {
+    throw new Error('openDmx.serialNumbers must be a non-empty array of serial-number strings');
+  }
+  const serials = [...(config.serialNumbers ?? []), ...(config.serialNumber ? [config.serialNumber] : [])];
+  return ports.find(candidate => config.path
+    ? candidate.path === config.path
+    : serials.length ? serials.includes(candidate.serialNumber)
+      : candidate.manufacturer?.toLowerCase().includes('ftdi'));
+}
+
 // Keep the control plane alive while USB outputs disconnect and re-enumerate.
 export async function createDmxOutputs(factories, { now = () => performance.now(), retryMs = 5000, log = console } = {}) {
   const slots = factories.map(open => ({ open, transport: null, nextAttempt: 0, error: null }));

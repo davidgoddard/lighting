@@ -40,6 +40,12 @@
   },
   "music": {
     "enabled": true,
+    "simpleLoudness": false,
+    "loudnessColour": true,
+    "loudnessColourMode": "offsets",
+    "simpleNormalSeconds": 12,
+    "simpleFastestSeconds": 1,
+    "simpleSlowestSeconds": 24,
     "minimumBrightnessPercent": 94,
     "maximumBrightnessPercent": 100,
     "gamma": 1.05,
@@ -58,7 +64,7 @@
     "tangoMaximumSpeedMultiplier": 7,
     "tangoPulseDelayMs": 20,
     "structureEffectsEnabled": true,
-    "avDelayMs": 2153,
+    "avDelayMs": 0,
     "tangoEventMinimumSpacingSeconds": 1,
     "activationBlendSeconds": 3
   },
@@ -69,7 +75,10 @@
   },
   "openDmx": {
     "enabled": true,
-    "serialNumber": "BG00QGXZ"
+    "serialNumbers": [
+      "BG00QGXZ",
+      "B002K1F3"
+    ]
   },
   "fixtureTypes": {
     "4ch-rgbw": {
