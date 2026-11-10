@@ -17,30 +17,13 @@ const lightsUpButton = document.querySelector("#lights-up");
 const lightsUpLabel = document.querySelector("#lights-up-label");
 const cortinaColourInput = document.querySelector("#cortina-colour");
 const applyCortinaColourButton = document.querySelector("#apply-cortina-colour");
-const musicInputs = {
-  loudnessColourMode: document.querySelector("#music-loudness-colour-mode"),
-  loudnessColour: document.querySelector("#music-loudness-colour"),
-  simpleNormalSeconds: document.querySelector("#music-simple-normal"),
-  simpleFastestSeconds: document.querySelector("#music-simple-fastest"),
-  simpleSlowestSeconds: document.querySelector("#music-simple-slowest"),
-  simpleLoudness: document.querySelector("#music-simple-loudness"),
-  enabled: document.querySelector("#music-enabled"), minimumBrightnessPercent: document.querySelector("#music-min"),
-  maximumBrightnessPercent: document.querySelector("#music-max"),
-  tangoColourChangeSensitivity: document.querySelector("#music-change-sensitivity"),
-  tangoAccentFallbackDelaySeconds: document.querySelector("#music-accent-delay"),
-  tangoEventSensitivity: document.querySelector("#music-event-sensitivity"),
-  tangoMinimumHueDisplacementDegrees: document.querySelector("#music-min-hue"),
-  tangoSpeedBoostMultiplier: document.querySelector("#music-speed-boost"),
-  tangoSpeedBoostDecayMs: document.querySelector("#music-boost-decay"),
-  tangoMaximumSpeedMultiplier: document.querySelector("#music-speed-cap"),
-  tangoPulseDelayMs: document.querySelector("#music-pulse-delay"),
-  avDelayMs: document.querySelector("#music-delay")
-};
-const musicDefaults = { enabled: false, simpleLoudness: true, loudnessColour: false, loudnessColourMode: "shared", simpleNormalSeconds: 12, simpleFastestSeconds: 3, simpleSlowestSeconds: 24, minimumBrightnessPercent: 62, maximumBrightnessPercent: 100,
-  tangoColourChangeSensitivity: .45, tangoAccentFallbackDelaySeconds: 1,
-  tangoEventSensitivity: .49, tangoMinimumHueDisplacementDegrees: 55,
-  tangoSpeedBoostMultiplier: 6, tangoSpeedBoostDecayMs: 1200,
-  tangoMaximumSpeedMultiplier: 18, tangoPulseDelayMs: 200, avDelayMs: 0 };
+const colourResponse = document.querySelector("#colour-response");
+const colourResponseBand = document.querySelector("#colour-response-band");
+const colourResponseSwatch = document.querySelector("#colour-response-swatch");
+const colourResponseHueValue = document.querySelector("#colour-response-hue-value");
+const responseBaseColour = colourResponseSwatch.closest(".response-base-colour");
+const applyColourResponseButton = document.querySelector("#apply-colour-response");
+const avDelayInput = document.querySelector("#music-delay");
 let fixtures = [];
 let hue = 0;
 let dragging = false;
@@ -52,12 +35,7 @@ let lightsUp = false;
 let musicSaveTimer;
 
 function formatMusicControl(name, value) {
-  if (name === "avDelayMs" || name === "tangoPulseDelayMs" || name === "tangoSpeedBoostDecayMs") return `${value} ms`;
-  if (name === "tangoMinimumHueDisplacementDegrees") return `${value}°`;
-  if (name === "tangoSpeedBoostMultiplier" || name === "tangoMaximumSpeedMultiplier") return `×${value}`;
-  if (name.endsWith("Seconds")) return `${value} s`;
-  if (["tangoColourChangeSensitivity", "tangoEventSensitivity"].includes(name)) return Number(value).toFixed(2);
-  return `${value}%`;
+  return `${value} ms`;
 }
 
 function renderMusic(music) {
@@ -66,60 +44,20 @@ function renderMusic(music) {
   const statusLabel = music.kind === "cortina"
     ? "Cortina override — music response suspended"
     : labels[music.status] ?? music.status;
-  const layoutNames = { shared: "Shared colour — all lights use full-track loudness", offsets: "Colour offsets — different anchor per light", bands: "Frequency bands — low / mid / high repeat in fixture order" };
-  const layout = music.config.loudnessColour ? ` · ${layoutNames[music.config.loudnessColourMode ?? "shared"]}` : "";
-  document.querySelector("#music-status").textContent = `${music.title ?? ""}${music.title ? " · " : ""}${statusLabel}${layout}${music.error ? ` · ${music.error}` : ""}`;
-  for (const [name, input] of Object.entries(musicInputs)) {
-    const value = music.config[name]; if (input.type === "checkbox") input.checked = Boolean(value); else input.value = String(value);
-    const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = formatMusicControl(name, value);
-  }
-  const feature = music.director?.feature ?? music.intent?.feature;
-  document.querySelector("#music-features").textContent = feature
-    ? music.director?.absoluteHue
-      ? `Loudness ${Math.round(feature.energy * 100)}% · colour ${music.director.hue.toFixed(1)}°`
-      : Number.isFinite(music.director?.normalisedMedianLoudness)
-      ? `Loudness ${Math.round(feature.energy * 100)}% · track median ${Math.round(music.director.normalisedMedianLoudness * 100)}%`
-      : music.director
-      ? `Change: rhythm ${Math.round(feature.rhythm*100)}% · dynamics ${Math.round(feature.dynamics*100)}% · harmony ${Math.round(feature.harmony*100)}% · texture ${Math.round(feature.timbre*100)}% · accent ${Math.round(feature.accent*100)}%`
-      : `Energy ${Math.round(feature.fastEnergy * 100)}% · phrase ${Math.round(feature.phrase * 100)}% · development ${Math.round(feature.development * 100)}% · momentum ${Math.round(feature.rhythm.momentum * 100)}%`
-    : "Waiting for analysis";
-  const timing = Number.isFinite(music.positionSeconds) && Number.isFinite(music.durationSeconds)
-    ? ` · ${Math.floor(music.positionSeconds / 60)}:${String(Math.floor(music.positionSeconds % 60)).padStart(2, "0")} / ${Math.floor(music.durationSeconds / 60)}:${String(Math.floor(music.durationSeconds % 60)).padStart(2, "0")}` : "";
-  const analysis = Number.isFinite(music.analysisMs) ? ` · analysed in ${(music.analysisMs / 1000).toFixed(1)}s` : "";
-  document.querySelector("#music-output").textContent = music.director
-    ? music.director.absoluteHue
-      ? `${music.director.cue} · two turns per range${timing}${analysis}`
-      : Number.isFinite(music.director.transitionSeconds)
-      ? `Simple mode · effective transition ${music.director.transitionSeconds.toFixed(1)} s · speed ×${music.director.colourAcceleration.toFixed(1)}${timing}${analysis}`
-      : `Brightness ${Math.round(music.director.brightness * 100)}% · colour ×${music.director.colourAcceleration.toFixed(1)}` +
-      ` · ${music.director.cue ?? "Wandering"} · ${music.director.colourCueCount ?? 0} colour changes` +
-      ` · boost ×${(music.director.speedBoost ?? 1).toFixed(1)}${timing}${analysis}`
-    : music.intent
-    ? `Value ${Math.round(music.intent.brightness * 100)}% · character ${Math.round(music.intent.character * 100)}%` +
-      ` · ${music.intent.stepRate.toFixed(2)} colour steps/s · ${music.intent.structure.mode}` +
-      `${music.intent.kick?.triggered ? " · exceptional kick" : ""}${timing}${analysis}`
-    : `Background lighting${timing}${analysis}`;
+  document.querySelector("#music-status").textContent = `${music.title ?? ""}${music.title ? " · " : ""}${statusLabel}${music.error ? ` · ${music.error}` : ""}`;
+  avDelayInput.value = String(music.config.avDelayMs);
+  avDelayInput.parentElement.querySelector("output").textContent = formatMusicControl("avDelayMs", music.config.avDelayMs);
 }
 
 function scheduleMusicSave() {
-  for (const [name, input] of Object.entries(musicInputs)) {
-    const output = input.parentElement?.querySelector("output");
-    if (output) output.textContent = formatMusicControl(name, input.value);
-  }
+  avDelayInput.parentElement.querySelector("output").textContent = formatMusicControl("avDelayMs", avDelayInput.value);
   clearTimeout(musicSaveTimer);
   musicSaveTimer = setTimeout(async () => {
-    const body = Object.fromEntries(Object.entries(musicInputs).map(([name, input]) => [name, input.type === "checkbox" ? input.checked : input.tagName === "SELECT" ? input.value : Number(input.value)]));
-    if (body.minimumBrightnessPercent > body.maximumBrightnessPercent) body.maximumBrightnessPercent = body.minimumBrightnessPercent;
-    try { const result = await post("/api/music", body); renderMusic({ config: result.music, status: result.status ?? "NO_TRACK" }); }
+    try { const result = await post("/api/music", { avDelayMs: Number(avDelayInput.value) }); renderMusic({ config: result.music, status: result.status ?? "NO_TRACK" }); }
     catch (error) { document.querySelector("#music-status").textContent = error.message; }
   }, 120);
 }
-for (const input of Object.values(musicInputs)) input.addEventListener("input", scheduleMusicSave);
-document.querySelector("#music-reset").addEventListener("click", () => {
-  for (const [name, value] of Object.entries(musicDefaults)) { const input = musicInputs[name]; if (input.type === "checkbox") input.checked = value; else input.value = value; }
-  scheduleMusicSave();
-});
+avDelayInput.addEventListener("input", scheduleMusicSave);
 
 function displayLightsUp(up) {
   lightsUp = Boolean(up);
@@ -172,7 +110,7 @@ function animateLightTargets(now) {
     const fixture = fixtures.find(item => item.id === id);
     if (fixture) fixture.hue = currentHue;
     const card = document.querySelector(`.light[data-id="${CSS.escape(id)}"]`);
-    const displayed = fixture?.finalRgb;
+    const displayed = fixture?.emulatedRgb ?? fixture?.finalRgb;
     card?.style.setProperty("--light-colour", displayed
       ? `rgb(${displayed.red} ${displayed.green} ${displayed.blue})` : `hsl(${currentHue} 100% 50%)`);
     const tracked = trackedFixture();
@@ -226,6 +164,10 @@ function syncWheelToSelection(initial = false) {
   const fixture = trackedFixture();
   showTarget(fixture);
   if (!fixture || dragging) return;
+  if (fixture.colourResponse?.mode === "audio") {
+    setHue(fixture.colourResponse.baseHue);
+    return;
+  }
   if (initial || fixture.mode === "wander") {
     setHue(fixture.hue);
   }
@@ -250,6 +192,22 @@ function renderEspStatus(externalMaster) {
   espStatus.title = connected && externalMaster.port ? `Serial port: ${externalMaster.port}` : "";
 }
 
+function updateFixtureCard(fixture) {
+  const card = document.querySelector(`.light[data-id="${CSS.escape(fixture.id)}"]`);
+  if (!card) return;
+  card.dataset.mode = fixture.mode;
+  const displayed = fixture.emulatedRgb ?? fixture.finalRgb;
+  if (displayed) card.style.setProperty("--light-colour",
+    `rgb(${displayed.red} ${displayed.green} ${displayed.blue})`);
+  const modeLabel = card.querySelector(".mode-label");
+  if (modeLabel) modeLabel.textContent = fixture.mode === "static"
+    ? "Static" : fixture.kind === "bridge" ? "Automatic"
+      : fixture.automaticMode === "master" ? "Master" : "Individual";
+  const pairLabel = card.querySelector(".pair-label");
+  if (pairLabel) pairLabel.textContent = fixture.pairLeaderId === null
+    ? "" : fixture.pairLeaderId === fixture.id ? " · Pair leader" : ` · Paired to ${fixture.pairLeaderName}`;
+}
+
 async function refreshEspStatus() {
   try {
     const response = await fetch("/api/state");
@@ -269,11 +227,14 @@ async function refreshEspStatus() {
     if (!staticUpdateRunning && !staticUpdatePending && !dragging) {
       const previous = fixtures.find(fixture => fixture.kind === "bridge");
       const bridge = latest.find(fixture => fixture.kind === "bridge");
-      if (JSON.stringify(previous) !== JSON.stringify(bridge)) {
+      if (Boolean(previous) !== Boolean(bridge) || (previous && bridge && previous.id !== bridge.id)) {
         const selection = selectedIds();
         fixtures = fixtures.filter(fixture => fixture.kind !== "bridge");
         if (bridge) fixtures.push(bridge);
         renderLightsPreservingSelection(selection);
+      } else if (previous && bridge) {
+        Object.assign(previous, bridge);
+        updateFixtureCard(previous);
       }
     }
   } catch {
@@ -308,7 +269,36 @@ function setHue(nextHue, send = false) {
   pointer.style.transform = `rotate(${hue - 90}deg)`;
   hueValue.value = `${hue}°`;
   wheel.setAttribute("aria-valuenow", hue);
-  if (send && selectedIds().length) scheduleStaticUpdate();
+  colourResponseSwatch.style.background = `hsl(${hue} 100% 50%)`;
+  colourResponseHueValue.value = `${hue}°`;
+  const responseMode = colourResponse.querySelector('input[name="colour-response-mode"]:checked')?.value;
+  if (send && selectedIds().length && responseMode !== "audio") scheduleStaticUpdate();
+}
+
+function selectedColourResponse() {
+  const selected = fixtures.filter(fixture => selectedIds().includes(fixture.id) && fixture.kind !== "bridge");
+  const leaders = [...new Map(selected.map(fixture => [fixture.pairLeaderId ?? fixture.id, fixture])).values()];
+  if (!leaders.length) return null;
+  const fallback = { mode: "off", band: "all", baseHue: 0 };
+  const first = leaders[0].colourResponse ?? fallback;
+  return leaders.every(fixture => JSON.stringify(fixture.colourResponse ?? fallback) === JSON.stringify(first)) ? first : null;
+}
+
+function syncColourResponseToSelection(moveWheel = false) {
+  const selected = fixtures.some(fixture => selectedIds().includes(fixture.id) && fixture.kind !== "bridge");
+  colourResponse.disabled = !selected;
+  const assignment = selectedColourResponse();
+  if (assignment) {
+    colourResponse.querySelector(`input[name="colour-response-mode"][value="${assignment.mode}"]`).checked = true;
+    colourResponseBand.value = assignment.band;
+    colourResponse.dataset.mixed = "false";
+    if (moveWheel && assignment.mode === "audio") setHue(assignment.baseHue);
+  } else if (selected) colourResponse.dataset.mixed = "true";
+  const audio = colourResponse.querySelector('input[name="colour-response-mode"]:checked')?.value === "audio";
+  colourResponseBand.disabled = !audio;
+  responseBaseColour.classList.toggle("unused", audio && colourResponseBand.value === "vu");
+  colourResponseSwatch.style.background = `hsl(${hue} 100% 50%)`;
+  colourResponseHueValue.value = `${hue}°`;
 }
 
 function updateSelectionSummary() {
@@ -319,6 +309,7 @@ function updateSelectionSummary() {
   unpairButton.disabled = !fixtures.some(fixture => selectedIds().includes(fixture.id) && fixture.pairLeaderId !== null);
   selectAllButton.textContent = count === fixtures.length ? "Clear selection" : "Select all";
   syncCortinaColourToSelection();
+  syncColourResponseToSelection(true);
   if (!trackedFixture()) targetPointer.classList.remove("visible");
 }
 
@@ -328,8 +319,9 @@ function renderLights() {
     label.className = "light";
     label.dataset.id = fixture.id;
     label.dataset.mode = fixture.mode;
-    label.style.setProperty("--light-colour", fixture.finalRgb
-      ? `rgb(${fixture.finalRgb.red} ${fixture.finalRgb.green} ${fixture.finalRgb.blue})`
+    const displayed = fixture.emulatedRgb ?? fixture.finalRgb;
+    label.style.setProperty("--light-colour", displayed
+      ? `rgb(${displayed.red} ${displayed.green} ${displayed.blue})`
       : `hsl(${fixture.hue} 100% 50%)`);
     const modeText = fixture.mode === "static"
       ? "Static"
@@ -452,6 +444,34 @@ selectAllButton.addEventListener("click", () => {
 
 brightnessSlider.addEventListener("input", scheduleBrightnessUpdate);
 
+for (const input of colourResponse.querySelectorAll('input[name="colour-response-mode"]')) {
+  input.addEventListener("change", () => {
+    const audio = input.value === "audio";
+    colourResponseBand.disabled = !audio;
+    if (audio) {
+      const assignment = selectedColourResponse();
+      if (assignment) setHue(assignment.baseHue);
+    }
+  });
+}
+colourResponseBand.addEventListener("change", () => {
+  responseBaseColour.classList.toggle("unused", colourResponseBand.value === "vu");
+});
+applyColourResponseButton.addEventListener("click", async () => {
+  const ids = fixtures.filter(fixture => fixture.kind !== "bridge" && selectedIds().includes(fixture.id)).map(fixture => fixture.id);
+  if (!ids.length) return;
+  const mode = colourResponse.querySelector('input[name="colour-response-mode"]:checked').value;
+  try {
+    applyColourResponseButton.disabled = true;
+    const result = await post("/api/colour-response", { fixtureIds: ids, mode,
+      band: colourResponseBand.value, baseHue: hue });
+    for (const fixture of fixtures) if (result.updated.includes(fixture.id)) fixture.colourResponse = { ...result.assignment };
+    status.textContent = mode === "off" ? "Slow random colours selected" : `${colourResponseBand.options[colourResponseBand.selectedIndex].text} response applied`;
+    renderLightsPreservingSelection(ids);
+  } catch (error) { status.textContent = error.message; }
+  finally { applyColourResponseButton.disabled = false; }
+});
+
 applyCortinaColourButton.addEventListener("click", async () => {
   // Cortina colour is a property of each selected DMX fixture, independent
   // of any pairing/master-wander relationship. The table bridge has no
@@ -561,9 +581,10 @@ try {
   events.addEventListener("output", event => {
     for (const output of JSON.parse(event.data)) {
       const fixture = fixtures.find(item => item.id === output.id);
-      if (fixture) Object.assign(fixture, { hue: output.hue, finalRgb: output.rgb, finalBrightness: output.brightness });
+      if (fixture) Object.assign(fixture, { hue: output.hue, finalRgb: output.rgb,
+        emulatedRgb: output.emulatedRgb ?? output.rgb, finalBrightness: output.brightness });
       document.querySelector(`.light[data-id="${CSS.escape(output.id)}"]`)?.style.setProperty(
-        "--light-colour", `rgb(${output.rgb.red} ${output.rgb.green} ${output.rgb.blue})`);
+        "--light-colour", `rgb(${(output.emulatedRgb ?? output.rgb).red} ${(output.emulatedRgb ?? output.rgb).green} ${(output.emulatedRgb ?? output.rgb).blue})`);
     }
   });
   setHue(fixtures[0]?.hue ?? 0);

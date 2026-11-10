@@ -54,20 +54,18 @@ wheel and **Resume wandering** commands operate independently of Tanda Forge.
 
 When Tanda Forge plays a normal track on its main output, it sends playback
 snapshots to `POST /api/playback`. Lighting analyses the whole track once and
-uses the current playback position to evaluate a **single tango director**.
-It adjusts the ongoing wandering rather than replacing it with a beat-chasing
-sequence. The director can accelerate colour travel during builds, briefly
-increase travel speed around salient events, nudge hue at significant changes,
-and introduce restrained, rounded brightness accents. There is no separate
-legacy music renderer or special `--tango-director` startup flag.
+uses the current playback position to evaluate the selected response for each
+light. A fixture can continue ordinary ambient wandering or derive its colour
+from full-range loudness, a frequency band, or a VU-style level meter. These
+assignments are independent per fixture and can also be applied to a selected
+group or pair.
 
-The director avoids turning the final collapse into silence into a lighting
-cue. When one song finishes, the **currently displayed hue is carried into
-ordinary wandering**, and when another music profile becomes active it starts
-from those displayed hues. There is no intentional colour reset at the track
-boundary; transitions continue through a gap in playback. Static/manual
-colours, lights-up/cortina, pairing and the global master brightness still take
-priority over automatic music effects.
+When playback is paused, unavailable or between tracks, audio response becomes
+inactive and the fixture's ordinary automatic wandering is shown again. The
+wander clock continues underneath while audio colour is active, so it is ready
+to resume without restarting its schedule. Static/manual colours,
+lights-up/cortina, pairing and the global master brightness still take priority
+over automatic music effects.
 
 ### How the analysis works (no trained model)
 
@@ -90,53 +88,45 @@ In particular, `harmony` is a chroma-change descriptor, not a chord
 transcription, and `accent` is a locally prominent onset, not proof of a
 musical downbeat. Historical noise and unusual recordings can affect results.
 
-### How the director converts features to lighting
+### Per-light colour-response modes
 
-Each automatically controlled fixture has its own reproducible random hue
-journey, with its own target and nominal 1–20 second travel duration in music
-mode. The target is replaced upon arrival. Sustained build increases the
-travel rate; detected salience, accent or colour-change events add **temporary
-speed boosts**. Those boosts decay exponentially and add together if events
-arrive close together, up to a configurable maximum.
+Select one or more lights, choose a mode in **Automatic colour response**, and
+press **Apply to selected**. Audio response is rendered only while a normal
+track has a ready analysis and the fixture is automatic; a manually held static
+colour remains static. The modes are:
 
-A substantial rhythm, dynamics, harmony or timbre peak may also trigger a
-**hue nudge**: over roughly 0.6 seconds the displayed colour moves by at least
-the configured hue displacement, arriving at the event timestamp. The original
-wandering target remains; after the nudge the fixture resumes travelling
-towards that target, rather than choosing a replacement destination.
+| Setting | Operation |
+| --- | --- |
+| **Audio off** | Uses ordinary slow random colour wandering. This is the standalone/default behavior. |
+| **All** | Maps the whole-track loudness trace around the colour wheel. The chosen base colour occurs at the track's minimum, median and maximum loudness, with a complete reverse wheel between each pair of anchors. |
+| **Bass** | Uses energy below 250 Hz and applies the same loudness-to-colour mapping around the chosen base colour. |
+| **Middle** | Uses energy from 250 Hz to 2 kHz around the chosen base colour. |
+| **Treble** | Uses energy above 2 kHz around the chosen base colour. |
+| **VU** | Uses the unsmoothed short-time audio level as a classic meter: green at low level through yellow to red at peak level. Attack is almost immediate and release decays over roughly 0.9 seconds. The base-colour choice is not used in this mode. |
 
-![Independent wandering, a hue nudge and resumption](docs/images/hue-nudge.svg)
+All, Bass, Middle and Treble deliberately use smoothed traces so that their
+colours flow rather than flicker. VU uses a separate unsmoothed trace so that
+musical attacks remain visible. Levels are normalized to the current recording,
+so the available colour range is useful for both quiet and loudly mastered
+tracks; it is not an absolute sound-pressure meter or a live microphone input.
 
-Brightness is a separate, relatively restrained effect. Prominent accents can
-produce a half-second **Gaussian-shaped brightness pulse** during appropriate
-musical passages. The pulse has its own offset (`tangoPulseDelayMs`, default
-+200 ms) and does not change the global AV/DSP delay (`avDelayMs`). Activity
-drops no longer produce dedicated pulses. The director also guards against
-false cues from a terminal drop into silence; where an ending is ambiguous,
-this remains a heuristic rather than a perfect music-boundary detector.
-
-![Accumulating speed impulses and a separate rounded brightness pulse](docs/images/impulses-and-pulses.svg)
-
-**Controls in the Music response panel** include music enable/disable, minimum
-and maximum brightness, colour-change sensitivity, event sensitivity, minimum
-hue displacement, event speed multiplier, speed-boost decay, maximum combined
-speed, accent fallback delay, accent pulse delay and AV delay. Changes to
-settings that affect precomputed trajectories rebuild the director data; they
-do not require a fresh audio FFT analysis. The current venue `config.json` is
-the source of initial values and settings can be changed through the web page.
-Some existing configuration fields are retained for older installations; the
-unified director is the active music algorithm.
+The chosen mode, frequency band and base hue are saved per fixture in the
+active `config.json` and restored when Lighting restarts. Applying a setting to
+a pair updates the whole pair so its behavior remains consistent if it is later
+unpaired. Changing the selection shows the common assignment when all selected
+leaders agree; a mixed selection is marked as mixed until a new setting is
+applied.
 
 ### Track handoff and event priority
 
 ![Music, silence, cortina and next-track handoff](docs/images/track-handoff.svg)
 
-- **Normal track:** music-derived colour and speed interventions are applied to
-  automatic fixtures, while static overrides remain untouched.
-- **End / silence / pause:** no final-drop lighting event or colour reset;
-  ordinary slow wandering resumes from the last visible colour.
-- **Next track:** new director trajectories are phase-offset to start at each
-  fixture's current displayed hue; brightness is blended over the handoff.
+- **Normal track:** each automatic fixture uses its saved Audio off, All,
+  Bass, Middle, Treble or VU assignment, while static overrides remain untouched.
+- **End / pause / unavailable analysis:** audio response becomes inactive and
+  the underlying slow wandering is displayed again.
+- **Next track:** Lighting analyses the new recording and evaluates each saved
+  per-light response against that track's own loudness range.
 - **Cortina:** Tanda Forge sends the separate lights-up notification, which
   takes priority over wandering and music cues. Each DMX fixture fades to its
   saved `lightsUpColour` (which may be different for every light). This brighter,
@@ -228,6 +218,11 @@ The page provides:
 - **Master brightness**, which affects every fixture in every mode. Fixtures
   with a brightness/dimmer channel receive this value directly; RGB-only
   fixtures have their RGB values scaled.
+- **Automatic colour response**, which assigns Audio off, All, Bass, Middle,
+  Treble or VU to the selected fixtures. For All and the three frequency bands,
+  choose the base colour on the main wheel before pressing **Apply to selected**.
+  VU always runs from green through yellow to red and therefore ignores the
+  base colour.
 
 Cortina colour is applied to **every explicitly selected DMX fixture** (paired
 or not), without changing its pairing or wandering settings. The picker keeps
@@ -596,51 +591,24 @@ See [firmware, wiring and setup instructions](table-lights/DMX-bridge/README-esp
 for the combined ESP-NOW and USB DMX bridge. Its wired and wireless outputs
 mirror the same universe, alongside any connected uDMX adapter.
 
-## Music lighting — unified director (November 2026)
+## Music lighting operation
 
-The tango director is now the **only active music renderer**. Start with `node lighting.js`; the former `--tango-director` flag is no longer required. Manual/static fixture settings and lights-up continue to take priority.
+Start with `node lighting.js`; no special music-renderer flag is required.
+Tanda Forge supplies track and playback information, and Lighting pre-analyses
+the recording before reporting the profile as ready. The web page shows the
+current track-analysis state. `avDelayMs` shifts the evaluated playback position
+to align visible response with delayed audio.
 
-While the playback coordinator reports `READY`, the director provides individual or master hue trajectories, rhythmic accent brightness pulses, activity-drop effects and feature-derived cues. Brightness accents use a bell-shaped Gaussian envelope with a 0.5-second window centred on the detected accent. Because the music is analysed before playback, a pulse can begin before the accent and peak on it. A pulse is also allowed during high-energy/build passages instead of being limited to idle gaps.
+Only fixtures assigned an audio mode are driven by the analysed trace. Audio
+off fixtures retain autonomous wandering, and static/manual fixtures retain
+their held colour. Pair followers use their leader's assignment. Lights up,
+cortina colour and master brightness are applied after the normal or audio
+colour has been selected, so those controls retain priority.
 
-When music is paused, disabled or absent, the fixtures continue their independent, slow autonomous wandering with randomly chosen targets and travel times (the normal `transitionSeconds` configuration applies, currently 8–40 seconds). Playback pause no longer freezes the ordinary wandering clock. The legacy music-intent motion functions remain in the source only for compatibility with existing repository tests; they are not selected as an alternative live music engine.
-
-Once-per-second `Music` logs now distinguish feature-derived musical state, accent and activity-drop levels, the director's actual cue, pulse amplitude, requested brightness, speed multiplier and emitted RGB. `kick=none` from the older renderer is no longer printed as the live music response.
-
-**Important:** These changes have been tested with automated tests and JavaScript syntax checks, not with the physical DMX bridge or fixtures. Check brightness range and photosensitivity concerns before use around dancers.
-
-### End-of-track silence detection
-
-The analyser now measures short-time **raw RMS** to detect a sustained final near-silent tail relative to the late recording's level and noise floor. `finalSilenceStartSeconds` is included in the analysis profile (or `null` when there is no reliable ending silence). Musical colour nudges, accents and activity-drop pulses stop at this detected boundary, not three seconds before the end. Slow wandering continues. The last chord remains eligible for music cues until the detected silence starts. This is a heuristic: a very noisy transfer or a cut-off recording may have no detectable final silence; in that case cues remain enabled to the end.
-
-### Activity drops and final endings (latest update)
-
-The director no longer turns activity-drop measurements into brightness pulses. End-of-track decays are especially prone to false dramatic events. A terminal collapse in musical energy is used **only as a veto** on new accent and colour nudge cues; it does not itself emit a cue. The detector prefers the analysed near-silent-tail onset when available, and otherwise looks for a sharp energy collapse sustained into the final part of the track. This is not an arbitrary three-second blackout. High-energy development and normal wandering remain active until the drop, and build continues to influence wandering speed. The `activityDrop` trace remains in analysis for diagnostics, but its effect count is zero.
-
-
-### Musical hue displacement and decaying speed boosts
-
-The **Music response** panel now exposes four controls beyond sensitivity:
-
-- **Minimum hue displacement** (30–150°; default 55°) is the minimum angular movement when a significant rhythmic/dynamic/harmonic/texture change nudges an individual light. The nudge is a short transition scheduled to finish at the detected event; the underlying wandering destination is retained.
-- **Event speed boost** (×1–×12; default ×6) controls the immediate speed multiplication for a full-strength detected event. It affects movement towards the fixture's existing random target; it does *not* choose a new target.
-- **Speed boost decay** (100–5000 ms; default 1200 ms) controls how long the extra speed persists. The added speed decays exponentially to about 2% of its initial value at the selected time.
-- **Maximum combined speed** (×2–×40; default ×18) caps the product of the build-driven speed factor and the accumulated event boosts.
-
-**Event minimum spacing is removed.** Locally prominent salience, accent and colour-change events add to a shared speed-boost envelope, including closely spaced events. Multiple boosts can compound, but the speed cap stops runaway movement. Sparse passages can therefore produce temporary speed bursts without forcing colour jumps. The hue-change sensitivity remains independent of the speed-boost event sensitivity.
-
-Changing any of these settings in the web panel rebuilds the deterministic director trajectories using the existing cached track analysis; the audio file need not be decoded again. When no track is playing, regular slow independent wandering remains unchanged. The final terminal energy collapse is still prevented from creating a new music cue.
-
-### Ending and pulse timing
-
-The audio worker checks the last 3.5 seconds for a sustained raw-RMS collapse,
-including noisy archival endings. Terminal edge cues (hue nudges, accents and
-additional speed boosts) are suppressed, but earlier musical events remain.
-When no convincing terminal collapse is found, the director keeps its normal
-behaviour. This is a heuristic, not a guaranteed score-level ending detector.
-
-The **Accent pulse delay** slider defaults to **+200 ms** (range -500 to +500 ms).
-It shifts *only* the smooth Gaussian accent brightness response; AV delay
-continues to control global playback / lighting synchronisation.
+Changing a fixture's response rebuilds the lightweight colour mapping from the
+already analysed profile. A newly added analysis trace, such as the unsmoothed
+VU trace, requires restarting Lighting and reloading the track once; subsequent
+mode changes do not decode the audio again.
 
 ### Diagnosing lights that go dark after Lights Up
 
@@ -665,90 +633,3 @@ and the origin reported by `lightsUpLastCommand`. If `lightsUp` remains `true`,
 physical DMX output, the bridge and the fixture independently; changing music
 thresholds will not solve that output-layer failure. The diagnostics report
 software-calculated channels, not an independent measurement of DMX on the wire.
-
-### Simple loudness experiment
-
-The music panel now defaults to **Simple loudness transitions**. Turn this off
-for the existing Tango director and its advanced effect controls. Music must
-still be enabled and a track ready. Static colours, pairing, cortina overrides
-and autonomous wandering without playback retain their existing behaviour.
-
-In simple mode every automatic light repeatedly chooses a saturated colour-wheel
-target, travels to it at the audio-driven speed, then chooses again.
-The smoothed RMS loudness trace is normalised to the track's own minimum (0)
-and maximum (1), then its median is calculated. Recording gain therefore does
-not set the pace. Loudness below the median interpolates
-from the normal time to the slowest time; above it interpolates towards the
-fastest time at the track maximum. Interpolation is linear in speed (the reciprocal of transition time), so
-halfway from median to maximum means halfway to the maximum speed.
-
-The music panel provides **normal**, **fastest** and **slowest transition**
-controls (defaults 12, 3 and 24 seconds; each adjustable from 1–60 seconds).
-Keep fastest ≤ normal ≤ slowest. There is no random timing variation, so these
-are actual bounds. Constant-level tracks and silence use the normal time.
-The whole track, including silence, contributes to the median and range.
-Speed responds throughout travel, including brief loud passages during a slow
-transition. Each chosen colour destination remains fixed until arrival. The
-panel shows normalised loudness, the track median and effective transition time
-(the time a whole transition would take at the current speed).
-
-Brightness stays at the configured maximum music brightness (subject to master
-brightness and existing overrides); no accents or brightness pulses are emitted.
-The existing advanced effect sliders apply only to the Tango director. Timing changes rebuild the trajectories using the existing analysis and preserve
-the visible colour at handoff.
-
-### Loudness colour wheel experiment
-
-Enable **Loudness colour wheel** in Music response to override both transition
-engines. The track's smoothed RMS minimum, median and maximum all map to red. Each
-half-range makes one complete reverse turn of the saturated colour wheel. Above
-the median, rising loudness moves through purple, blue, cyan, green, yellow and
-orange before reaching red at the maximum. Just below the median is yellow/orange;
-falling farther moves through green, cyan, blue and purple back to minimum red.
-Each half uses its own measured range, even when the median is not halfway
-between minimum and maximum. Falling loudness retraces the wheel. Loudness is
-interpolated between analysis samples before conversion to hue; there are no
-random targets, speed sliders or fixed-duration colour transitions in this mode.
-All automatic fixtures share the same colour. Static colours and lights-up
-retain their overrides; brightness stays at maximum music brightness.
-Silence/constant-level tracks are red. Existing 1.2-second RMS smoothing and AV
-delay still apply. The panel reports normalised loudness and hue.
-
-On entering this mode, a 1.5-second blend preserves the displayed colour before
-settling onto the absolute mapping (no permanent hue offset). Music-driven
-individual/master switches now also blend over 1.5 seconds rather than jumping
-between unrelated trajectories. Fast changes caused by rapidly changing audio
-remain possible; this is not a general colour-speed limiter.
-
-### Multi-light colour-wheel layouts
-
-With **Loudness colour wheel** enabled, choose **Colour wheel layout**:
-
-- **Shared colour** preserves the original red-anchored mapping.
-- **Multi-light: colour offsets** uses the same full-track loudness for every
-  fixture, but spaces their anchor hues evenly around 360° in configured fixture
-  order. Three fixtures have anchors 0°, 120°, 240°. Each still makes one reverse
-  revolution from minimum to median and another from median to maximum.
-- **Multi-light: bass / mid / treble** assigns those bands cyclically in configured
-  fixture order. Bands are 20–250 Hz, 250–2000 Hz, and 2000 Hz to the analyser's
-  5512.5 Hz Nyquist limit. FFT power magnitudes are smoothed over 1.2 seconds;
-  each band's own minimum, median and maximum set its two red-anchored turns.
-
-Multi-light layouts retain separate fixture colours during master mode. Static
-colours and lights-up still override music; paired fixtures still follow their
-leader. Assignments include all configured fixture slots, so changing a fixture
-between static and automatic does not rearrange the others. The current table
-bridge still controls its table lights as one group, not individually.
-
-Restart Lighting and reload the track to obtain frequency-band analysis. Older
-profiles explicitly report a full-loudness fallback until reanalysed. Layout
-changes use the existing colour handoff blend and do not require reanalysis once
-band traces are available.
-
-If all lamp emulations show the same colour, check the layout shown in the
-Music response status. Enabling the colour wheel alone does not select bands:
-**Shared colour** deliberately drives all automatic lights alike. Select
-**Multi-light: bass / mid / treble** for separate band curves. If the status
-reports unavailable bands, restart Lighting and reload the track for analysis.
-The emulations display each fixture's rendered RGB output, including pairing
-and lights-up overrides; bands may occasionally converge on the same colour.

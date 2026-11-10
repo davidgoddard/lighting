@@ -5,13 +5,12 @@ import vm from 'node:vm';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { encodeBridgeDmx } from '../bridge-dmx.js';
-import { validateMusicConfig } from '../music-intent.js';
 
 // Exercise the real server and serial monitor with hardware replaced at their boundaries.
 const source = readFileSync(new URL('../lighting.js', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify(new URL('../lighting.js', import.meta.url).href)).replace(/main\(\)\.catch\([\s\S]*$/, '');
 function harness() {
-  let handler, port;
+  let handler, port, persistedConfig;
   class SerialPort extends EventEmitter {
     static async list() { return [{ path: '/test', vendorId: '1a86' }]; }
     constructor() { super(); port = this; this.writes = []; }
@@ -23,12 +22,17 @@ function harness() {
   const context = vm.createContext({
     process: { argv: [], cwd: () => '/tmp' }, URL, Buffer, performance, console,
     setTimeout, clearTimeout, setInterval, clearInterval, SerialPort,
-    ReadlineParser: class {}, validateMusicConfig, encodeBridgeDmx,
+    ReadlineParser: class {}, encodeBridgeDmx,
+    readFile: async () => JSON.stringify(persistedConfig),
+    writeFile: async (_path, contents) => { persistedConfig = JSON.parse(contents); },
     offsetHue: (hue, offset) => (hue + offset + 360) % 360,
     createServer: callback => { handler = callback; return { once() {} }; }
   });
   vm.runInContext(source + '\nglobalThis.api = {createWebServer, createExternalMasterMonitor, validateConfig, createFixtureState, createModeState, renderUniverse, applyMusicMotion, transitionHue, transitionProgress, releaseMusicTransitions, musicCanDriveHue, updateMode, setIndividualMode, tableMasterTransition};', context);
-  return { api: context.api, port: () => port, request: async (path, body) => {
+  return { api: context.api, port: () => port,
+    setPersistedConfig: value => { persistedConfig = structuredClone(value); },
+    persistedConfig: () => persistedConfig,
+    request: async (path, body) => {
     const request = Object.assign(Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []), { method: body ? 'POST' : 'GET', url: path });
     let status, result;
     const response = { setHeader() {}, writeHead(code) { status = code; }, end(text) { result = JSON.parse(text); } };
@@ -37,6 +41,33 @@ function harness() {
     return { status, result };
   }};
 }
+
+test('colour response mode and base hue persist and restore per fixture', async () => {
+  const h = harness();
+  const sourceConfig = JSON.parse(readFileSync(new URL('../config.json', import.meta.url)));
+  const untouchedResponse = sourceConfig.fixtures[1].colourResponse ?? {mode:'off', band:'all', baseHue:0};
+  h.setPersistedConfig(sourceConfig);
+  const config = h.api.validateConfig(sourceConfig);
+  const states = config.fixtures.slice(0, 2).map(fixture => h.api.createFixtureState(config, fixture, 0));
+  const mode = h.api.createModeState(config, 0);
+  const externalMaster = { tableLeader: () => null, tableFixture: () => [] };
+  h.api.createWebServer(config, states, mode, {}, externalMaster);
+
+  const changed = await h.request('/api/colour-response', {
+    fixtureIds: [states[0].fixture.id], mode: 'audio', band: 'bass', baseHue: 725
+  });
+  assert.equal(changed.status, 200);
+  assert.deepEqual(changed.result.assignment, {mode:'audio', band:'bass', baseHue:5});
+  assert.deepEqual(h.persistedConfig().fixtures[0].colourResponse,
+    {mode:'audio', band:'bass', baseHue:5});
+
+  const restarted = h.api.validateConfig(h.persistedConfig());
+  const restoredState = h.api.createFixtureState(config, restarted.fixtures[0], 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(restoredState.colourResponse)),
+    {mode:'audio', band:'bass', baseHue:5});
+  assert.deepEqual(JSON.parse(JSON.stringify(restarted.fixtures[1].colourResponse)),
+    untouchedResponse);
+});
 
 test('bridge-only commands, mixed selection validation, and disconnection', async () => {
   const h = harness();
@@ -175,18 +206,18 @@ test('table music master rate-limits destinations, handles kicks and returns to 
   assert.equal(await monitor.syncMusicMaster(transition, ordinary, 2000), false, 'disconnect is harmless');
 });
 
-test('table master follows the colour actually rendered by the Tango director', () => {
+test('table master follows the colour rendered by the per-light audio controller', () => {
   const h = harness();
   const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
   const states = config.fixtures.slice(0, 2).map(fixture => h.api.createFixtureState(config, fixture, 0));
+  states[0].colourResponse = {mode:'audio',band:'all',baseHue:0};
   const mode = h.api.createModeState(config, 0);
   mode.name = 'master';
   mode.masterTransition = {fromHue:10,toHue:20,startedAt:0,durationMs:10000};
   const controls = {
     mode,
     masterBrightness: config.masterBrightness,
-    tangoHueOffsets: {master: 0},
-    tangoLook: {look:{hue:210,fixtureHues:{},brightness:.5,saturation:1}}
+    audioColourLook: {look:{hue:210,fixtureHues:{[states[0].fixture.id]:210}}}
   };
   const transition = h.api.tableMasterTransition(config, states, mode, controls, 5000);
   assert.equal(transition.toHue, 210, 'bridge target must use the visible DMX master hue');
@@ -357,21 +388,6 @@ test('state exposes the final RGB used by web emulation', async () => {
   assert.deepEqual(Object.keys(state.result.fixtures[0].finalRgb), ['red','green','blue']);
 });
 
-test('post-track background keeps automatic RGB fixtures at the audio background level', () => {
-  const h = harness();
-  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
-  const state = h.api.createFixtureState(config, config.fixtures[0], 0);
-  state.transition = {fromHue:0,toHue:0,startedAt:0,durationMs:10000};
-  const mode = h.api.createModeState(config, 0);
-  const full = h.api.renderUniverse(config, [state], 0,
-    {masterBrightness:255,mode,musicIntent:null,tangoBackgroundBrightness:1});
-  const background = h.api.renderUniverse(config, [state], 0,
-    {masterBrightness:255,mode,musicIntent:null,tangoBackgroundBrightness:.4});
-  assert.equal(background[0],Math.round(full[0]*.4));
-  assert.equal(background[1],Math.round(full[1]*.4));
-  assert.equal(background[2],Math.round(full[2]*.4));
-});
-
 test('strong drama completes several deterministic colour destinations in twenty seconds', () => {
   const h = harness();
   const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
@@ -389,23 +405,6 @@ test('strong drama completes several deterministic colour destinations in twenty
     previousHue = hue;
   }
   assert.ok(picked >= 4, `expected several fresh destinations, got ${picked}`);
-});
-
-test('music value uses a dedicated dimmer once rather than dimming RGB twice', () => {
-  const h = harness();
-  const config = h.api.validateConfig(JSON.parse(readFileSync(new URL('../config.json', import.meta.url))));
-  const fixture = config.fixtures.find(item => 'brightness' in item.type.channels);
-  const state = h.api.createFixtureState(config, fixture, 0);
-  state.transition = {fromHue: 0, toHue: 0, startedAt: 0, durationMs: 1000};
-  const mode = h.api.createModeState(config, 0);
-  const universe = h.api.renderUniverse(config, [state], 0, {
-    masterBrightness: 255,
-    mode,
-    musicIntent: {brightness:.5,saturation:.96,influence:1,accent:null},
-  });
-  const start = fixture.address - 1;
-  assert.equal(universe[start + fixture.type.channels.red - 1], 255);
-  assert.equal(universe[start + fixture.type.channels.brightness - 1], 128);
 });
 
 test('music hue driving follows playback readiness even while table master mode is active', () => {
