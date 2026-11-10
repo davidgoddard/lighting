@@ -2,7 +2,7 @@
 
 Lighting is a **dual-mode Node.js lighting application for one DMX universe**.
 It works independently as an ambient lighting controller, or as a companion to
-**Tanda Forge** on the same computer. Rather than a prescriptive beat-synchronised
+**[Tanda Forge](https://davidgoddard.github.io/tanda-forge/)** on the same computer. Rather than a prescriptive beat-synchronised
 light show, it loosely reflects the music's intensity and changes in character
 by modifying smooth colour transitions. A browser page controls the fixtures
 manually, and an optional bridge coordinates ESP table lights. Tanda Forge also
@@ -633,3 +633,83 @@ and the origin reported by `lightsUpLastCommand`. If `lightsUp` remains `true`,
 physical DMX output, the bridge and the fixture independently; changing music
 thresholds will not solve that output-layer failure. The diagnostics report
 software-calculated channels, not an independent measurement of DMX on the wire.
+
+## Start Lighting when a USB device is connected on macOS
+
+The included lightweight watcher can run in the background and start Lighting
+when it finds a configured uDMX, Open DMX or ESP32 device. Once started, Lighting
+keeps running if the device is unplugged, allowing it to reconnect or use another
+output without losing the web controls. The watcher never starts a second copy.
+
+First install the dependencies normally and find the absolute path to Node.js:
+
+```sh
+npm install
+command -v node
+```
+
+Create `~/Library/LaunchAgents/com.local.lighting.plist` with the following
+contents. Replace both example paths with the output from `command -v node` and
+the absolute path to this repository. Do not use `~` in the plist.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local.lighting</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/absolute/path/to/Lighting/scripts/mac-usb-watcher.mjs</string>
+    <string>/absolute/path/to/Lighting/config.json</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/Lighting</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/lighting.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lighting-error.log</string>
+</dict>
+</plist>
+```
+
+Load the agent without rebooting:
+
+```sh
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.local.lighting.plist
+```
+
+The watcher now starts at login but Lighting itself starts only after a matching
+device is present. It reads the uDMX IDs, ESP32 vendor ID, Open DMX paths and
+Open DMX serial numbers from the selected configuration file; ESP32-C3 native
+USB vendor `303a` is also recognised. Visit `http://localhost:8080` after
+connecting a device. To inspect startup or USB connection problems, read
+`/tmp/lighting.log` and `/tmp/lighting-error.log`.
+
+For a quick foreground test before loading the LaunchAgent, run:
+
+```sh
+npm run watch:usb
+```
+
+To stop the agent and disable automatic startup:
+
+```sh
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.local.lighting.plist
+```
+
+Stopping the LaunchAgent also sends a normal termination signal to Lighting so
+it can send its blackout frame and close the USB devices. Stop any manually
+started copy before loading the LaunchAgent because USB and serial devices can
+normally be opened by only one process.
